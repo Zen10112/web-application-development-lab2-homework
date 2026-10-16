@@ -1,0 +1,39 @@
+.data-grid-container {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+}
+
+.data-grid {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: #ffffff;
+  color: #1e293b;
+  text-align: left;
+}
+
+.data-grid th,
+.data-grid td {
+  padding: 14px 16px;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+
+.data-grid th {
+  background-color: #1e293b;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.data-grid tbody tr:nth-child(even) {
+  background-color: #f1f5f9;
+}
+
+.data-grid tbody tr:hover {
+  background-color: #dbeafe;
+}
+
+.data-grid tbody tr:last-child td {
+  border-bottom: none;
+}
