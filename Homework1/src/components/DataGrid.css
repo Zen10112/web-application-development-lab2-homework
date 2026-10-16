@@ -1,6 +1,7 @@
 
 .data-grid-wrapper {
   width: 100%;
+  min-width: 0;
 }
 
 .data-grid-toolbar {
@@ -11,54 +12,49 @@
 }
 
 .data-grid-toolbar label {
-  font-size: 15px;
-  font-weight: 600;
   color: #1e293b;
+  font-weight: 600;
 }
 
 .data-grid-toolbar input {
   width: 100%;
   max-width: 400px;
-  padding: 12px 14px;
-  border: 1px solid #94a3b8;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid #64748b;
   border-radius: 6px;
-  font-size: 15px;
-  background: white;
+  background: #ffffff;
   color: #0f172a;
+  font: inherit;
 }
 
-.data-grid-toolbar input:focus-visible,
-.sort-button:focus-visible,
-.pagination-controls button:focus-visible {
-  outline: 3px solid #2563eb;
-  outline-offset: 3px;
-}
-
+/* Semantic grid container */
 .data-grid-container {
   width: 100%;
+  max-width: 100%;
   overflow-x: auto;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #94a3b8;
   border-radius: 8px;
 }
 
 .data-grid {
   width: 100%;
   border-collapse: collapse;
+  background: #ffffff;
+  color: #0f172a;
   text-align: left;
-  background: white;
-  color: #1e293b;
 }
 
 .data-grid th,
 .data-grid td {
   padding: 14px 16px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
   white-space: nowrap;
 }
 
 .data-grid th {
   background: #1e293b;
-  color: white;
+  color: #ffffff;
   font-weight: 600;
 }
 
@@ -66,7 +62,32 @@
   background: #f1f5f9;
 }
 
+/* Hover: màu xanh nhạt */
 .data-grid tbody tr:hover {
+  background: #dbeafe;
+}
+
+/* Selected: màu xanh riêng */
+.data-grid tbody tr.selected-row,
+.data-grid tbody tr.selected-row:nth-child(even) {
+  background: #bfdbfe;
+  color: #0f172a;
+}
+
+.data-grid tbody tr.selected-row:hover {
+  background: #93c5fd;
+}
+
+/* Focus: viền rõ ràng, không phụ thuộc vào màu nền */
+.data-grid td:focus {
+  outline: 3px solid #1d4ed8;
+  outline-offset: -3px;
+  background: #eff6ff;
+}
+
+.data-grid tbody tr.selected-row td:focus {
+  outline: 3px solid #1e40af;
+  outline-offset: -3px;
   background: #dbeafe;
 }
 
@@ -74,10 +95,11 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 4px;
+  min-height: 44px;
+  padding: 8px;
   border: 0;
   background: transparent;
-  color: white;
+  color: #ffffff;
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -87,10 +109,22 @@
   text-decoration: underline;
 }
 
+/* Focus-visible cho các control native */
+.data-grid-toolbar input:focus-visible,
+.sort-button:focus-visible,
+.pagination-controls button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 3px;
+}
+
+.sort-button:focus-visible {
+  outline-color: #facc15;
+}
+
 .empty-message {
   padding: 30px;
   text-align: center;
-  color: #475569;
+  color: #334155;
 }
 
 .data-grid-footer {
@@ -109,15 +143,19 @@
 
 .pagination-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
 .pagination-controls button {
+  min-height: 44px;
+  min-width: 88px;
   padding: 10px 18px;
   border: 1px solid #1d4ed8;
   border-radius: 6px;
   background: #1d4ed8;
-  color: white;
+  color: #ffffff;
+  font: inherit;
   font-weight: 600;
   cursor: pointer;
 }
@@ -128,14 +166,32 @@
 
 .pagination-controls button:disabled {
   background: #e2e8f0;
-  border-color: #cbd5e1;
-  color: #64748b;
+  border-color: #94a3b8;
+  color: #475569;
   cursor: not-allowed;
+}
+
+/* Ẩn trực quan nhưng screen reader vẫn đọc được */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 @media (max-width: 600px) {
   .data-grid-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .data-grid th,
+  .data-grid td {
+    padding: 12px;
   }
 }

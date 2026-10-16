@@ -30,6 +30,9 @@ function App() {
           data={employees}
           columns={columns}
           ariaLabel="Employee Directory Data Grid"
+          onRowSelect={(employee) => {
+            console.log("Selected employee:", employee);
+  }}
         />
       </section>
     </main>
