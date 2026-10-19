@@ -1,21 +1,39 @@
 
 import { useEffect, useRef, useState } from "react";
-import { AudioTaskQueue } from "../controllers/audio-queue-controller";
+import {
+  AudioTaskQueue,
+} from "../controllers/audio-queue-controller";
 import { AudioPlayer } from "../controllers/audio-player";
 import { demoTracks } from "../data/demo-tracks";
+import AudioVisualizer from "./AudioVisualizer";
+
+interface AudioEngine {
+  context: AudioContext;
+  queue: AudioTaskQueue;
+  player: AudioPlayer;
+}
 
 export default function QueueDemo() {
-  const contextRef = useRef<AudioContext | null>(null);
-  const queueRef = useRef<AudioTaskQueue | null>(null);
-  const playerRef = useRef<AudioPlayer | null>(null);
+  // Keep audio objects alive across React renders.
+  const engineRef = useRef<AudioEngine | null>(null);
 
-  const mountedRef = useRef(false);
+  // Prevent outdated async operations from updating UI.
   const operationRef = useRef(0);
+  const mountedRef = useRef(false);
 
-  const [logs, setLogs] = useState<string[]>([]);
-  const [status, setStatus] = useState("Idle");
+  const [analyser, setAnalyser] =
+    useState<AnalyserNode | null>(null);
+
+  const [fftSize, setFFTSize] =
+    useState<256 | 512>(256);
+
+  const [isPlaying, setIsPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
+
+  const [status, setStatus] = useState("Idle");
+  const [pendingCount, setPendingCount] = useState(0);
+  const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -24,83 +42,142 @@ export default function QueueDemo() {
       mountedRef.current = false;
       operationRef.current++;
 
-      playerRef.current?.dispose();
-      queueRef.current?.dispose();
+      const engine = engineRef.current;
 
-      const context = contextRef.current;
+      if (engine) {
+        engine.player.dispose();
+        engine.queue.dispose();
 
-      playerRef.current = null;
-      queueRef.current = null;
-      contextRef.current = null;
-
-      if (context && context.state !== "closed") {
-        void context.close().catch(console.error);
+        if (engine.context.state !== "closed") {
+          void engine.context.close().catch(
+            console.error
+          );
+        }
       }
+
+      engineRef.current = null;
     };
   }, []);
 
   const addLog = (message: string) => {
     if (!mountedRef.current) return;
 
-    setLogs((previous) => [...previous, message]);
+    setLogs((previous) => [
+      ...previous,
+      message,
+    ]);
   };
 
-  // Create Web Audio objects lazily on user interaction.
-  const getAudioEngine = () => {
-    if (
-      contextRef.current &&
-      queueRef.current &&
-      playerRef.current
-    ) {
-      return {
-        context: contextRef.current,
-        queue: queueRef.current,
-        player: playerRef.current,
-      };
+  const updateQueueStatus = () => {
+    const queue = engineRef.current?.queue;
+
+    if (!queue || !mountedRef.current) return;
+
+    setPendingCount(queue.getPendingCount());
+  };
+
+  // Create a single AudioContext, Queue and Player.
+  const getEngine = (): AudioEngine => {
+    if (engineRef.current) {
+      return engineRef.current;
     }
 
     const context = new AudioContext();
     const queue = new AudioTaskQueue(context);
     const player = new AudioPlayer(context, queue);
 
-    contextRef.current = context;
-    queueRef.current = queue;
-    playerRef.current = player;
+    player.setFFTSize(fftSize);
 
-    return { context, queue, player };
+    player.onPlaybackEnded = () => {
+      if (!mountedRef.current) return;
+
+      setIsPlaying(false);
+      setStatus("Playback finished");
+      addLog("Playback ended naturally");
+    };
+
+    const engine = {
+      context,
+      queue,
+      player,
+    };
+
+    engineRef.current = engine;
+
+    // Only updates when engine is initialized.
+    setAnalyser(player.getAnalyser());
+
+    return engine;
+  };
+
+  const handleFFTChange = (size: 256 | 512) => {
+    setFFTSize(size);
+
+    engineRef.current?.player.setFFTSize(size);
+
+    addLog(`FFT size changed to ${size}`);
   };
 
   const playTrack = async (index: number) => {
     const operation = ++operationRef.current;
-
-    setBusy(true);
-    setStatus("Loading audio...");
-
     const track = demoTracks[index];
 
+    if (!track) return;
+
+    setBusy(true);
+    setIsPlaying(false);
+    setStatus(`Loading ${track.name}...`);
+
     try {
-      const { player } = getAudioEngine();
+      const { player } = getEngine();
 
       addLog(`Request playback: ${track.name}`);
 
       await player.play(track.url);
 
-      if (operation !== operationRef.current) return;
+      if (
+        operation !== operationRef.current ||
+        !mountedRef.current
+      ) {
+        return;
+      }
 
-      setCurrentIndex(index);
-      setStatus(`Playing: ${track.name}`);
-      addLog(`Playback started: ${track.name}`);
+      updateQueueStatus();
+
+      if (player.getIsPlaying()) {
+        setCurrentIndex(index);
+        setIsPlaying(true);
+        setStatus(`Playing: ${track.name}`);
+
+        addLog(`Playback started: ${track.name}`);
+      } else {
+        setIsPlaying(false);
+        setStatus("Playback finished");
+      }
     } catch (error) {
-      if (operation !== operationRef.current) return;
+      if (
+        operation !== operationRef.current ||
+        !mountedRef.current
+      ) {
+        return;
+      }
 
       const message =
-        error instanceof Error ? error.message : String(error);
+        error instanceof Error
+          ? error.message
+          : String(error);
 
+      setIsPlaying(false);
       setStatus("Playback error");
+
       addLog(`ERROR: ${message}`);
     } finally {
-      if (operation === operationRef.current && mountedRef.current) {
+      if (
+        operation === operationRef.current &&
+        mountedRef.current
+      ) {
         setBusy(false);
+        updateQueueStatus();
       }
     }
   };
@@ -108,14 +185,15 @@ export default function QueueDemo() {
   const stopPlayback = () => {
     operationRef.current++;
 
-    playerRef.current?.stop();
-    queueRef.current?.cancelAll();
+    engineRef.current?.player.stop();
 
+    setIsPlaying(false);
     setBusy(false);
     setCurrentIndex(-1);
     setStatus("Stopped");
+    setPendingCount(0);
 
-    addLog("Playback stopped and pending tasks cancelled");
+    addLog("Playback stopped and queue cancelled");
   };
 
   const nextTrack = () => {
@@ -129,33 +207,61 @@ export default function QueueDemo() {
     const operation = ++operationRef.current;
 
     setBusy(true);
+    setIsPlaying(false);
+    setCurrentIndex(-1);
     setStatus("Testing FIFO Queue...");
 
     try {
-      const { context, queue, player } = getAudioEngine();
+      const { queue, player } = getEngine();
 
+      // Stop playback before testing decoding.
       player.stop();
 
-      if (context.state === "suspended") {
-        await context.resume();
-      }
+      addLog("Starting concurrent FIFO test");
 
-      if (operation !== operationRef.current) return;
-
-      addLog("Enqueue all three tracks simultaneously");
-
-      const tasks = demoTracks.map(async (track) => {
+      const tasks = demoTracks.map((track) => {
         addLog(`ENQUEUED: ${track.name}`);
 
-        const buffer = await queue.enqueue(track.url);
+        const promise = queue.enqueue(track.url);
 
-        addLog(`RESOLVED: ${track.name}`);
-        return buffer;
+        return promise.then(
+          (buffer) => {
+            if (operation === operationRef.current) {
+              addLog(`RESOLVED: ${track.name}`);
+              updateQueueStatus();
+            }
+
+            return buffer;
+          },
+          (error: unknown) => {
+            if (operation === operationRef.current) {
+              const message =
+                error instanceof Error
+                  ? error.message
+                  : String(error);
+
+              addLog(
+                `REJECTED: ${track.name} - ${message}`
+              );
+
+              updateQueueStatus();
+            }
+
+            throw error;
+          }
+        );
       });
+
+      updateQueueStatus();
 
       const results = await Promise.allSettled(tasks);
 
-      if (operation !== operationRef.current) return;
+      if (
+        operation !== operationRef.current ||
+        !mountedRef.current
+      ) {
+        return;
+      }
 
       const success = results.filter(
         (result) => result.status === "fulfilled"
@@ -167,100 +273,195 @@ export default function QueueDemo() {
         `FIFO finished: ${success} success, ${failure} failed`
       );
 
-      addLog(`Results: ${success} success, ${failure} failed`);
+      addLog(
+        `Results: ${success} success, ${failure} failed`
+      );
     } catch (error) {
       if (operation !== operationRef.current) return;
 
       const message =
-        error instanceof Error ? error.message : String(error);
+        error instanceof Error
+          ? error.message
+          : String(error);
 
-      setStatus("Test failed");
+      setStatus("FIFO test failed");
       addLog(`ERROR: ${message}`);
     } finally {
-      if (operation === operationRef.current && mountedRef.current) {
+      if (
+        operation === operationRef.current &&
+        mountedRef.current
+      ) {
         setBusy(false);
+        updateQueueStatus();
       }
     }
   };
 
   return (
-    <section className="queue-demo">
-      <h2>Web Audio FIFO Queue Engine</h2>
+    <section className="audio-dashboard">
+      <div className="dashboard-heading">
+        <h2>Audio Queue Dashboard</h2>
+        <p>
+          Web Audio API - FFT Frequency Visualization
+        </p>
+      </div>
 
-      <p>
-        Load, decode and play audio using the Web Audio API.
-      </p>
+      {/* TRACK LIST */}
+      <div className="dashboard-card">
+        <h3>Music Library</h3>
 
-      <h3>Tracks</h3>
-
-      <div className="track-list">
-        {demoTracks.map((track, index) => (
-          <div className="track-item" key={track.id}>
-            <span>{track.name}</span>
-
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void playTrack(index)}
+        <div className="track-list">
+          {demoTracks.map((track, index) => (
+            <div
+              className={
+                currentIndex === index && isPlaying
+                  ? "track-item active-track"
+                  : "track-item"
+              }
+              key={track.id}
             >
-              Play
-            </button>
+              <div className="track-info">
+                <span className="track-icon" aria-hidden="true">
+                  ♪
+                </span>
+
+                <div>
+                  <strong>{track.name}</strong>
+                  <small>MP3 Audio</small>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void playTrack(index)}
+              >
+                Play
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* PLAYBACK CONTROLS */}
+      <div className="dashboard-card">
+        <h3>Playback Controls</h3>
+
+        <div className="audio-controls">
+          <button
+            type="button"
+            className="stop-button"
+            onClick={stopPlayback}
+          >
+            Stop
+          </button>
+
+          <button
+            type="button"
+            disabled={busy}
+            onClick={nextTrack}
+          >
+            Next Track
+          </button>
+        </div>
+      </div>
+
+      {/* FFT SETTINGS */}
+      <div className="dashboard-card">
+        <h3>FFT Configuration</h3>
+
+        <div
+          className="fft-controls"
+          role="group"
+          aria-label="FFT size"
+        >
+          <button
+            type="button"
+            className={
+              fftSize === 256 ? "fft-active" : ""
+            }
+            aria-pressed={fftSize === 256}
+            onClick={() => handleFFTChange(256)}
+          >
+            FFT 256
+          </button>
+
+          <button
+            type="button"
+            className={
+              fftSize === 512 ? "fft-active" : ""
+            }
+            aria-pressed={fftSize === 512}
+            onClick={() => handleFFTChange(512)}
+          >
+            FFT 512
+          </button>
+        </div>
+      </div>
+
+      {/* VISUALIZER */}
+      <AudioVisualizer
+        analyser={analyser}
+        isPlaying={isPlaying}
+        fftSize={fftSize}
+      />
+
+      {/* QUEUE STATUS */}
+      <div className="dashboard-card">
+        <h3>Queue Status</h3>
+
+        <div className="queue-status-grid">
+          <div className="status-box">
+            <span>Status</span>
+            <strong role="status">{status}</strong>
           </div>
-        ))}
+
+          <div className="status-box">
+            <span>Pending Tasks</span>
+            <strong>{pendingCount}</strong>
+          </div>
+
+          <div className="status-box">
+            <span>Playback</span>
+            <strong>
+              {isPlaying ? "Playing" : "Stopped"}
+            </strong>
+          </div>
+        </div>
+
+        <div className="audio-controls test-controls">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void runConcurrentTest()}
+          >
+            Run Concurrent FIFO Test
+          </button>
+        </div>
       </div>
 
-      <h3>Playback Controls</h3>
+      {/* EXECUTION LOG */}
+      <div className="dashboard-card">
+        <h3>Execution Log</h3>
 
-      <div className="audio-controls">
-        <button
-          type="button"
-          onClick={stopPlayback}
+        <div
+          className="queue-log"
+          role="log"
+          aria-live="polite"
+          aria-label="Audio processing log"
         >
-          Stop
-        </button>
-
-        <button
-          type="button"
-          onClick={nextTrack}
-          disabled={busy}
-        >
-          Next Track
-        </button>
-      </div>
-
-      <h3>Concurrency Test</h3>
-
-      <div className="audio-controls">
-        <button
-          type="button"
-          onClick={() => void runConcurrentTest()}
-          disabled={busy}
-        >
-          Run Concurrent FIFO Test
-        </button>
-      </div>
-
-      <p role="status" aria-live="polite">
-        Status: {status}
-      </p>
-
-      <h3>Execution Log</h3>
-
-      <div
-        className="queue-log"
-        role="log"
-        aria-live="polite"
-        aria-label="Audio queue execution log"
-      >
-        {logs.length === 0 ? (
-          <p>No audio tasks yet.</p>
-        ) : (
-          <ol>
-            {logs.map((message, index) => (
-              <li key={index}>{message}</li>
-            ))}
-          </ol>
-        )}
+          {logs.length === 0 ? (
+            <p>No audio tasks yet.</p>
+          ) : (
+            <ol>
+              {logs.map((message, index) => (
+                <li key={index}>
+                  {message}
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
       </div>
     </section>
   );

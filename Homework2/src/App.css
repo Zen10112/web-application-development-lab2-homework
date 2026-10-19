@@ -63,3 +63,303 @@
     width: 100%;
   }
 }
+
+/* ===================================
+   HW2 - AUDIO VISUALIZER DASHBOARD
+=================================== */
+
+.audio-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.dashboard-heading h2 {
+  margin: 0 0 8px;
+  font-size: 26px;
+  color: #0f172a;
+}
+
+.dashboard-heading p {
+  margin: 0;
+  color: #475569;
+}
+
+.dashboard-card {
+  padding: 24px;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+}
+
+.dashboard-card h3 {
+  margin: 0 0 18px;
+  color: #0f172a;
+  font-size: 19px;
+}
+
+/* TRACK LIST */
+
+.track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.track-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  transition: background-color 0.2s;
+}
+
+.track-item:hover {
+  background: #eff6ff;
+}
+
+.active-track {
+  border-color: #2563eb;
+  background: #dbeafe;
+}
+
+.track-info {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.track-info strong {
+  display: block;
+  margin-bottom: 4px;
+  color: #0f172a;
+}
+
+.track-info small {
+  color: #475569;
+}
+
+.track-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 24px;
+}
+
+/* BUTTONS */
+
+.audio-dashboard button {
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid #1d4ed8;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.audio-dashboard button:hover:not(:disabled) {
+  background: #1e40af;
+}
+
+.audio-dashboard button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 3px;
+}
+
+.audio-dashboard button:disabled {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  color: #475569;
+  cursor: not-allowed;
+}
+
+.audio-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.audio-dashboard .stop-button {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+.audio-dashboard .stop-button:hover {
+  background: #991b1b;
+}
+
+/* FFT CONTROLS */
+
+.fft-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.audio-dashboard .fft-controls button {
+  background: #f1f5f9;
+  color: #1e293b;
+  border-color: #94a3b8;
+}
+
+.audio-dashboard .fft-controls button:hover {
+  background: #dbeafe;
+}
+
+.audio-dashboard .fft-controls button.fft-active {
+  background: #1d4ed8;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+
+/* VISUALIZER */
+
+.visualizer-panel {
+  padding: 24px;
+  border: 1px solid #1e293b;
+  border-radius: 14px;
+  background: #0f172a;
+  color: #ffffff;
+  overflow: hidden;
+}
+
+.visualizer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.visualizer-header h3 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 19px;
+}
+
+.visualizer-fft-label {
+  padding: 6px 12px;
+  border: 1px solid #475569;
+  border-radius: 20px;
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.audio-visualizer-canvas {
+  display: block;
+  width: 100%;
+  height: 260px;
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.visualizer-description {
+  margin: 16px 0 0;
+  color: #cbd5e1;
+  font-size: 14px;
+  text-align: center;
+}
+
+/* QUEUE STATUS */
+
+.queue-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.status-box {
+  padding: 18px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #f8fafc;
+  min-width: 0;
+}
+
+.status-box span {
+  display: block;
+  margin-bottom: 10px;
+  color: #475569;
+  font-size: 14px;
+}
+
+.status-box strong {
+  display: block;
+  color: #0f172a;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.test-controls {
+  margin-top: 20px;
+}
+
+/* LOG */
+
+.audio-dashboard .queue-log {
+  padding: 18px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.audio-dashboard .queue-log ol {
+  margin: 0;
+  padding-left: 24px;
+}
+
+.audio-dashboard .queue-log li {
+  margin-bottom: 10px;
+}
+
+/* RESPONSIVE */
+
+@media (max-width: 600px) {
+  .dashboard-card,
+  .visualizer-panel {
+    padding: 16px;
+  }
+
+  .queue-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .audio-visualizer-canvas {
+    height: 200px;
+  }
+
+  .track-item {
+    flex-wrap: wrap;
+  }
+
+  .track-item > button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audio-dashboard button,
+  .track-item {
+    transition: none;
+  }
+}

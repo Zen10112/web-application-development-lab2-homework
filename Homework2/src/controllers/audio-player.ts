@@ -3,30 +3,56 @@ import { AudioTaskQueue } from "./audio-queue-controller";
 
 export class AudioPlayer {
   private source: AudioBufferSourceNode | null = null;
+  private analyser: AnalyserNode;
   private requestVersion = 0;
   private disposed = false;
+
+  // Called when playback finishes naturally.
+  public onPlaybackEnded: (() => void) | null = null;
 
   constructor(
     private readonly audioContext: AudioContext,
     private readonly queue: AudioTaskQueue
-  ) {}
+  ) {
+    // Create one analyser for this player.
+    this.analyser = audioContext.createAnalyser();
+
+    this.analyser.fftSize = 256;
+    this.analyser.smoothingTimeConstant = 0.8;
+    this.analyser.minDecibels = -90;
+    this.analyser.maxDecibels = -10;
+
+    // Connect analyser to speakers once.
+    this.analyser.connect(audioContext.destination);
+  }
+
+  public getAnalyser(): AnalyserNode {
+    return this.analyser;
+  }
+
+  public setFFTSize(size: 256 | 512): void {
+    this.analyser.fftSize = size;
+  }
 
   public async play(trackUrl: string): Promise<void> {
     if (this.disposed) {
-      throw new Error("Player has been disposed");
+      throw new Error("AudioPlayer has been disposed");
     }
 
-    // Invalidate older playback requests.
+    // Stop previous playback and invalidate old requests.
     this.stop();
 
     const version = this.requestVersion;
 
-    // Must be initiated through a user action.
+    // Browsers can suspend AudioContext until user interaction.
     if (this.audioContext.state === "suspended") {
       await this.audioContext.resume();
     }
 
-    if (version !== this.requestVersion || this.disposed) {
+    if (
+      this.disposed ||
+      version !== this.requestVersion
+    ) {
       return;
     }
 
@@ -34,61 +60,78 @@ export class AudioPlayer {
       throw new Error("AudioContext is not running");
     }
 
-    // FIFO Queue handles fetch + decode.
+    // Queue handles fetching and decoding.
     const buffer = await this.queue.enqueue(trackUrl);
 
-    // Ignore outdated requests.
-    if (version !== this.requestVersion || this.disposed) {
+    // Ignore an outdated playback request.
+    if (
+      this.disposed ||
+      version !== this.requestVersion
+    ) {
       return;
     }
 
+    // Every play creates a NEW source node.
     const source = this.audioContext.createBufferSource();
 
     source.buffer = buffer;
-    source.connect(this.audioContext.destination);
+
+    // Audio graph:
+    // source -> analyser -> destination
+    source.connect(this.analyser);
 
     source.onended = () => {
+      source.onended = null;
       source.disconnect();
 
       if (this.source === source) {
         this.source = null;
+
+        if (!this.disposed) {
+          this.onPlaybackEnded?.();
+        }
       }
     };
 
     this.source = source;
 
     try {
-      // start() is called exactly once per source.
+      // AudioBufferSourceNode.start() only once.
       source.start(0);
     } catch (error) {
-      this.source = null;
       source.onended = null;
       source.disconnect();
+
+      if (this.source === source) {
+        this.source = null;
+      }
+
       throw error;
     }
   }
 
   public stop(): void {
-    // Prevent an old async play() from starting later.
+    // Invalidate in-progress async playback requests.
     this.requestVersion++;
 
-    // Reject pending downloads and abort active fetch.
+    // Abort active fetch and reject waiting queue tasks.
     this.queue.cancelAll();
 
     const current = this.source;
     this.source = null;
 
-    if (current) {
-      current.onended = null;
+    if (!current) return;
 
-      try {
-        current.stop();
-      } catch {
-        // Source may already have stopped.
-      }
+    // Prevent manual stop from firing natural-end callback.
+    current.onended = null;
 
-      current.disconnect();
+    try {
+      current.stop();
+    } catch {
+      // Source may have already stopped.
     }
+
+    current.disconnect();
   }
 
   public async next(trackUrl: string): Promise<void> {
@@ -104,5 +147,8 @@ export class AudioPlayer {
 
     this.stop();
     this.disposed = true;
+
+    this.onPlaybackEnded = null;
+    this.analyser.disconnect();
   }
 }
