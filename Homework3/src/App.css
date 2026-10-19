@@ -127,3 +127,27 @@
     font-size: 13px;
   }
 }
+
+/* Multiple reservation cards */
+.reservation-list {
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(min(100%, 320px), 1fr)
+  );
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.reservation-list .order-placeholder {
+  min-width: 0;
+}
+
+.reservation-list .reservation-details {
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.reservation-list .buy-button {
+  display: block;
+}

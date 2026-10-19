@@ -9,135 +9,110 @@ import type {
   ReservationResult,
 } from "../types/inventory";
 
-import {
-  transitionState,
-} from "./inventory-state-machine";
+import { transitionState } from "./inventory-state-machine";
 
 const DEFAULT_RESERVATION_TTL_MS = 30_000;
+const DEFAULT_CHECKOUT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
+
+interface CheckoutJob {
+  promise: Promise<CheckoutResult>;
+  settle: (success: boolean, reason?: string) => void;
+}
+
+function validateTimeout(value: number, name: string): void {
+  if (
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > MAX_TIMEOUT_MS
+  ) {
+    throw new RangeError(
+      `${name} must be a positive integer within timer limits`
+    );
+  }
+}
 
 export class InventoryService {
   private readonly reservationTtlMs: number;
+  private readonly checkoutTimeoutMs: number;
 
-  private inventories = new Map<
-    string,
-    InventorySnapshot
-  >();
-
-  private reservations = new Map<
-    string,
-    Reservation
-  >();
+  private inventories = new Map<string, InventorySnapshot>();
+  private reservations = new Map<string, Reservation>();
 
   private expirationTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
   >();
 
-  // One in-flight checkout per reservation ID.
-  private checkoutPromises = new Map<
-    string,
-    Promise<CheckoutResult>
-  >();
-
+  private checkoutJobs = new Map<string, CheckoutJob>();
   private disposed = false;
 
   constructor(
     products: Product[],
-    reservationTtlMs: number =
-      DEFAULT_RESERVATION_TTL_MS
+    reservationTtlMs: number = DEFAULT_RESERVATION_TTL_MS,
+    checkoutTimeoutMs: number = DEFAULT_CHECKOUT_TIMEOUT_MS
   ) {
-    if (
-      !Number.isSafeInteger(reservationTtlMs) ||
-      reservationTtlMs <= 0 ||
-      reservationTtlMs > MAX_TIMEOUT_MS
-    ) {
-      throw new RangeError(
-        "Reservation TTL must be a positive integer within the timer limit"
-      );
-    }
+    validateTimeout(reservationTtlMs, "Reservation TTL");
+    validateTimeout(checkoutTimeoutMs, "Checkout timeout");
 
     this.reservationTtlMs = reservationTtlMs;
+    this.checkoutTimeoutMs = checkoutTimeoutMs;
 
     for (const product of products) {
-      const inventory = product.inventory;
+      const source = product.inventory;
 
       if (this.inventories.has(product.id)) {
-        throw new Error(
-          `Duplicate product ID: ${product.id}`
-        );
+        throw new Error(`Duplicate product ID: ${product.id}`);
       }
 
       const values = [
-        inventory.totalStock,
-        inventory.availableStock,
-        inventory.reservedStock,
-        inventory.soldStock,
+        source.totalStock,
+        source.availableStock,
+        source.reservedStock,
+        source.soldStock,
       ];
 
       if (
-        inventory.productId !== product.id ||
+        source.productId !== product.id ||
         !values.every(
-          (value) =>
-            Number.isSafeInteger(value) && value >= 0
+          (value) => Number.isSafeInteger(value) && value >= 0
         ) ||
-        inventory.availableStock +
-          inventory.reservedStock +
-          inventory.soldStock !==
-          inventory.totalStock
+        source.availableStock +
+          source.reservedStock +
+          source.soldStock !== source.totalStock
       ) {
         throw new Error(
           `Invalid inventory for product ${product.id}`
         );
       }
 
-      // Never mutate the original product data.
-      this.inventories.set(product.id, {
-        productId: product.id,
-        totalStock: inventory.totalStock,
-        availableStock: inventory.availableStock,
-        reservedStock: inventory.reservedStock,
-        soldStock: inventory.soldStock,
-      });
+      this.inventories.set(product.id, { ...source });
     }
   }
 
   private assertActive(): void {
     if (this.disposed) {
-      throw new Error(
-        "InventoryService has been disposed"
-      );
+      throw new Error("InventoryService has been disposed");
     }
   }
 
-  public getInventory(
-    productId: string
-  ): InventorySnapshot | null {
+  public getInventory(productId: string): InventorySnapshot | null {
     this.assertActive();
     this.expireReservations();
 
     const inventory = this.inventories.get(productId);
-
     return inventory ? { ...inventory } : null;
   }
 
-  public getAvailableStock(
-    productId: string
-  ): number {
-    return (
-      this.getInventory(productId)?.availableStock ?? 0
-    );
+  public getAvailableStock(productId: string): number {
+    return this.getInventory(productId)?.availableStock ?? 0;
   }
 
-  public getReservation(
-    reservationId: string
-  ): Reservation | null {
+  public getReservation(reservationId: string): Reservation | null {
     this.assertActive();
     this.expireReservations();
 
-    const reservation =
-      this.reservations.get(reservationId);
-
+    const reservation = this.reservations.get(reservationId);
     return reservation ? { ...reservation } : null;
   }
 
@@ -151,22 +126,13 @@ export class InventoryService {
     );
   }
 
-  /**
-   * Atomically reserves stock within this service instance.
-   * There is no await between checking and updating stock.
-   */
-  public reserve(
-    request: ReservationRequest
-  ): ReservationResult {
+  public reserve(request: ReservationRequest): ReservationResult {
     this.assertActive();
     this.expireReservations();
 
     const { productId, quantity } = request;
 
-    if (
-      !Number.isSafeInteger(quantity) ||
-      quantity <= 0
-    ) {
+    if (!Number.isSafeInteger(quantity) || quantity <= 0) {
       return {
         success: false,
         error: "Quantity must be a positive integer",
@@ -176,54 +142,37 @@ export class InventoryService {
     const inventory = this.inventories.get(productId);
 
     if (!inventory) {
-      return {
-        success: false,
-        error: "Product not found",
-      };
+      return { success: false, error: "Product not found" };
     }
 
     if (inventory.availableStock < quantity) {
-      return {
-        success: false,
-        error: "Insufficient stock",
-      };
+      return { success: false, error: "Insufficient stock" };
     }
 
     const createdAt = Date.now();
-    const expiresAt =
-      createdAt + this.reservationTtlMs;
-
     const reservationId = crypto.randomUUID();
 
-    let status = transitionState(
-      "AVAILABLE",
-      "RESERVING"
-    );
+    let status = transitionState("AVAILABLE", "RESERVING");
 
-    // Synchronous stock mutation prevents local overselling.
+    // Atomic within this JavaScript service instance.
+    // No await between checking and updating stock.
     inventory.availableStock -= quantity;
     inventory.reservedStock += quantity;
 
-    status = transitionState(
-      status,
-      "RESERVED"
-    );
+    status = transitionState(status, "RESERVED");
 
     const reservation: Reservation = {
       reservationId,
       productId,
       quantity,
       createdAt,
-      expiresAt,
+      expiresAt: createdAt + this.reservationTtlMs,
       status,
     };
 
-    this.reservations.set(
-      reservationId,
-      reservation
-    );
+    this.reservations.set(reservationId, reservation);
 
-    const timeout = setTimeout(() => {
+    const timer = setTimeout(() => {
       this.expirationTimers.delete(reservationId);
 
       if (!this.disposed) {
@@ -231,10 +180,7 @@ export class InventoryService {
       }
     }, this.reservationTtlMs);
 
-    this.expirationTimers.set(
-      reservationId,
-      timeout
-    );
+    this.expirationTimers.set(reservationId, timer);
 
     return {
       success: true,
@@ -242,15 +188,11 @@ export class InventoryService {
     };
   }
 
-  /**
-   * Releases stock for overdue RESERVED reservations.
-   * CHECKOUT and COMPLETED reservations are never expired.
-   */
   public expireReservations(): number {
     this.assertActive();
 
     const now = Date.now();
-    let expiredCount = 0;
+    let count = 0;
 
     for (const reservation of this.reservations.values()) {
       if (
@@ -265,15 +207,11 @@ export class InventoryService {
       );
 
       if (!inventory) {
-        throw new Error(
-          "Inventory missing for an existing reservation"
-        );
+        throw new Error("Inventory missing for reservation");
       }
 
       if (inventory.reservedStock < reservation.quantity) {
-        throw new Error(
-          "Inventory invariant violation: insufficient reserved stock"
-        );
+        throw new Error("Reserved stock invariant violated");
       }
 
       reservation.status = transitionState(
@@ -284,36 +222,29 @@ export class InventoryService {
       inventory.reservedStock -= reservation.quantity;
       inventory.availableStock += reservation.quantity;
 
-      const timeout = this.expirationTimers.get(
+      const timer = this.expirationTimers.get(
         reservation.reservationId
       );
 
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-
+      if (timer !== undefined) {
+        clearTimeout(timer);
         this.expirationTimers.delete(
           reservation.reservationId
         );
       }
 
-      expiredCount++;
+      count++;
     }
 
-    return expiredCount;
+    return count;
   }
 
-  /**
-   * Finalizes a checkout exactly once.
-   *
-   * Success: CHECKOUT -> COMPLETED
-   * Failure: CHECKOUT -> FAILED
-   */
   private finishCheckout(
     reservationId: string,
-    paymentSucceeded: boolean
+    success: boolean,
+    reason?: string
   ): CheckoutResult {
-    const reservation =
-      this.reservations.get(reservationId);
+    const reservation = this.reservations.get(reservationId);
 
     if (!reservation) {
       return {
@@ -333,8 +264,7 @@ export class InventoryService {
       return {
         success: false,
         reservation: { ...reservation },
-        error:
-          `Cannot finish checkout from ${reservation.status}`,
+        error: `Cannot finish checkout from ${reservation.status}`,
       };
     }
 
@@ -343,26 +273,19 @@ export class InventoryService {
     );
 
     if (!inventory) {
-      throw new Error(
-        "Inventory missing for an existing reservation"
-      );
+      throw new Error("Inventory missing for reservation");
     }
 
-    if (
-      inventory.reservedStock < reservation.quantity
-    ) {
-      throw new Error(
-        "Inventory invariant violation: insufficient reserved stock"
-      );
+    if (inventory.reservedStock < reservation.quantity) {
+      throw new Error("Reserved stock invariant violated");
     }
 
-    if (paymentSucceeded) {
+    if (success) {
       reservation.status = transitionState(
         reservation.status,
         "COMPLETED"
       );
 
-      // Transfer held stock into sold stock only once.
       inventory.reservedStock -= reservation.quantity;
       inventory.soldStock += reservation.quantity;
 
@@ -372,12 +295,12 @@ export class InventoryService {
       };
     }
 
+    // Failure policy: release held stock exactly once.
     reservation.status = transitionState(
       reservation.status,
       "FAILED"
     );
 
-    // Explicit failure policy: release held stock.
     inventory.reservedStock -= reservation.quantity;
     inventory.availableStock += reservation.quantity;
 
@@ -385,35 +308,25 @@ export class InventoryService {
       success: false,
       reservation: { ...reservation },
       error:
+        reason ??
         "Checkout failed. Reserved stock was released.",
     };
   }
 
-  /**
-   * Locks a valid RESERVED reservation synchronously,
-   * then invokes a simulated asynchronous payment processor.
-   *
-   * Concurrent calls for the same reservation share
-   * the same in-flight Promise.
-   */
   public checkout(
     reservationId: string,
     processor: () => Promise<boolean>
   ): Promise<CheckoutResult> {
     this.assertActive();
-
-    // Reclaim overdue reservations before attempting checkout.
     this.expireReservations();
 
-    const existingPromise =
-      this.checkoutPromises.get(reservationId);
+    const existing = this.checkoutJobs.get(reservationId);
 
-    if (existingPromise) {
-      return existingPromise;
+    if (existing) {
+      return existing.promise;
     }
 
-    const reservation =
-      this.reservations.get(reservationId);
+    const reservation = this.reservations.get(reservationId);
 
     if (!reservation) {
       return Promise.resolve({
@@ -422,7 +335,6 @@ export class InventoryService {
       });
     }
 
-    // Idempotent success: never count sold stock twice.
     if (reservation.status === "COMPLETED") {
       return Promise.resolve({
         success: true,
@@ -434,8 +346,7 @@ export class InventoryService {
       return Promise.resolve({
         success: false,
         reservation: { ...reservation },
-        error:
-          `Cannot checkout a ${reservation.status} reservation`,
+        error: `Cannot checkout a ${reservation.status} reservation`,
       });
     }
 
@@ -449,57 +360,85 @@ export class InventoryService {
       });
     }
 
-    // Local atomic lock: no await before state transition.
+    // Acquire the lock synchronously, before awaiting payment.
     reservation.status = transitionState(
       reservation.status,
       "CHECKOUT"
     );
 
-    // Once checkout starts, reservation TTL no longer
-    // releases the stock.
-    const expirationTimer =
-      this.expirationTimers.get(reservationId);
+    const expiryTimer = this.expirationTimers.get(reservationId);
 
-    if (expirationTimer !== undefined) {
-      clearTimeout(expirationTimer);
+    if (expiryTimer !== undefined) {
+      clearTimeout(expiryTimer);
       this.expirationTimers.delete(reservationId);
     }
 
-    const checkoutPromise = Promise.resolve()
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let resolveCheckout!: (result: CheckoutResult) => void;
+
+    const promise = new Promise<CheckoutResult>((resolve) => {
+      resolveCheckout = resolve;
+    });
+
+    const settle = (success: boolean, reason?: string) => {
+      if (settled) return;
+      settled = true;
+
+      if (timeout !== undefined) {
+        clearTimeout(timeout);
+      }
+
+      // Remove the pending operation before notifying callers.
+      this.checkoutJobs.delete(reservationId);
+
+      const result = this.finishCheckout(
+        reservationId,
+        success,
+        reason
+      );
+
+      resolveCheckout(result);
+    };
+
+    // Register the checkout before invoking the processor.
+    this.checkoutJobs.set(reservationId, {
+      promise,
+      settle,
+    });
+
+    timeout = setTimeout(() => {
+      settle(
+        false,
+        "Checkout timed out. Reserved stock was released."
+      );
+    }, this.checkoutTimeoutMs);
+
+    // A late processor result cannot change finalized stock.
+    void Promise.resolve()
       .then(() => processor())
       .then(
-        (result) =>
-          this.finishCheckout(
-            reservationId,
-            result === true
-          ),
-        () =>
-          this.finishCheckout(
-            reservationId,
-            false
-          )
-      )
-      .finally(() => {
-        this.checkoutPromises.delete(reservationId);
-      });
+        (result) => settle(result === true),
+        () => settle(false, "Checkout processor failed.")
+      );
 
-    this.checkoutPromises.set(
-      reservationId,
-      checkoutPromise
-    );
-
-    return checkoutPromise;
+    return promise;
   }
 
-  /**
-   * Cleans up reservation expiry timers.
-   * This does not cancel an external checkout processor.
-   */
   public dispose(): void {
     if (this.disposed) return;
 
-    for (const timeout of this.expirationTimers.values()) {
-      clearTimeout(timeout);
+    // Finish pending checkouts before marking the service disposed.
+    // Their late payment callbacks will be ignored.
+    for (const job of [...this.checkoutJobs.values()]) {
+      job.settle(
+        false,
+        "Inventory service disposed during checkout."
+      );
+    }
+
+    for (const timer of this.expirationTimers.values()) {
+      clearTimeout(timer);
     }
 
     this.expirationTimers.clear();

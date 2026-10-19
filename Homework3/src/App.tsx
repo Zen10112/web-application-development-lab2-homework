@@ -13,30 +13,35 @@ import "./App.css";
 const FLASH_SALE_DURATION_MS = 10 * 60 * 1000;
 
 function App() {
-  const { remainingMs, isEnded } = useCountdown(
-    FLASH_SALE_DURATION_MS
-  );
+  const {
+    remainingMs,
+    targetTime,
+    isEnded,
+  } = useCountdown(FLASH_SALE_DURATION_MS);
 
   const {
     displayedProducts,
     pendingProductIds,
-    latestReservation,
+    reservations,
+    checkoutPendingIds,
     error,
     isReady,
     reserveProduct,
     checkoutReservation,
-    checkoutPendingId,
   } = useInventoryReservation();
 
   const handleBuyNow = (product: Product) => {
-    if (isEnded || !isReady) {
+    if (
+      isEnded ||
+      !isReady ||
+      Date.now() >= targetTime
+    ) {
       return;
     }
 
     void reserveProduct(
       product.id,
-      isEnded,
-      remainingMs
+      targetTime
     );
   };
 
@@ -60,10 +65,10 @@ function App() {
         />
 
         <OrderStatus
-          reservation={latestReservation}
+          reservations={reservations}
+          checkoutPendingIds={checkoutPendingIds}
           error={error}
           isReserving={pendingProductIds.length > 0}
-          isCheckingOut={checkoutPendingId !== null}
           onCheckout={handleCheckout}
         />
       </main>

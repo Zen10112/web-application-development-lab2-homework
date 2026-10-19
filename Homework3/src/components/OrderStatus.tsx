@@ -2,71 +2,47 @@
 import type { Reservation } from "../types/inventory";
 
 interface OrderStatusProps {
-  reservation: Reservation | null;
+  reservations: Reservation[];
   error: string | null;
   isReserving: boolean;
-  isCheckingOut: boolean;
+  checkoutPendingIds: string[];
   onCheckout: (reservationId: string) => void;
 }
 
+function formatTime(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString("vi-VN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function statusMessage(status: Reservation["status"]): string {
+  switch (status) {
+    case "RESERVED":
+      return "RESERVED – Giữ hàng thành công";
+    case "CHECKOUT":
+      return "CHECKOUT – Đang thanh toán";
+    case "COMPLETED":
+      return "COMPLETED – Thanh toán thành công";
+    case "EXPIRED":
+      return "EXPIRED – Hết thời gian giữ hàng";
+    case "FAILED":
+      return "FAILED – Đã trả hàng về kho";
+    case "RESERVING":
+      return "RESERVING – Đang giữ hàng";
+    default:
+      return status;
+  }
+}
+
 export default function OrderStatus({
-  reservation,
+  reservations,
   error,
   isReserving,
-  isCheckingOut,
+  checkoutPendingIds,
   onCheckout,
 }: OrderStatusProps) {
-  const formatTime = (timestamp: number) =>
-    new Date(timestamp).toLocaleTimeString("vi-VN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-
-  const canCheckout =
-    reservation?.status === "RESERVED" &&
-    !isReserving &&
-    !isCheckingOut &&
-    Date.now() < reservation.expiresAt;
-
-  let message = "Chưa có đơn hàng nào.";
-  let statusClass = "idle";
-  let symbol = "🛒";
-
-  if (isCheckingOut) {
-    message = "CHECKOUT – Đang xử lý thanh toán...";
-    statusClass = "reserving";
-    symbol = "⏳";
-  } else if (isReserving) {
-    message = "RESERVING – Đang giữ hàng...";
-    statusClass = "reserving";
-    symbol = "⏳";
-  } else if (error) {
-    message = `FAILED – ${error}`;
-    statusClass = "failed";
-    symbol = "⚠️";
-  } else if (reservation?.status === "RESERVED") {
-    message = "RESERVED – Giữ hàng thành công!";
-    statusClass = "reserved";
-    symbol = "✅";
-  } else if (reservation?.status === "CHECKOUT") {
-    message = "CHECKOUT – Đang xử lý thanh toán...";
-    statusClass = "reserving";
-    symbol = "⏳";
-  } else if (reservation?.status === "COMPLETED") {
-    message = "COMPLETED – Thanh toán thành công!";
-    statusClass = "reserved";
-    symbol = "✅";
-  } else if (reservation?.status === "EXPIRED") {
-    message = "EXPIRED – Đã hết thời gian giữ hàng.";
-    statusClass = "expired";
-    symbol = "⌛";
-  } else if (reservation?.status === "FAILED") {
-    message = "FAILED – Thanh toán thất bại, đã trả hàng.";
-    statusClass = "failed";
-    symbol = "❌";
-  }
-
   return (
     <section
       className="order-panel"
@@ -80,86 +56,151 @@ export default function OrderStatus({
         <span>Reservation & Checkout</span>
       </div>
 
-      <div
-        className={`order-placeholder reservation-${statusClass}`}
-        role="status"
-        aria-live="polite"
-      >
-        <div
-          className="order-symbol"
-          aria-hidden="true"
+      {error && (
+        <p
+          role="alert"
+          className="demo-purchase-notice"
         >
-          {symbol}
+          {error}
+        </p>
+      )}
+
+      {isReserving && (
+        <div
+          className="order-placeholder reservation-reserving"
+          role="status"
+        >
+          <p>⏳ RESERVING – Đang giữ hàng...</p>
         </div>
+      )}
 
-        <p>{message}</p>
-
-        {reservation && (
-          <div className="reservation-details">
-            <div>
-              <strong>Reservation ID:</strong>{" "}
-              <code>{reservation.reservationId}</code>
-            </div>
-
-            <div>
-              <strong>Product:</strong>{" "}
-              {reservation.productId}
-            </div>
-
-            <div>
-              <strong>Quantity:</strong>{" "}
-              {reservation.quantity}
-            </div>
-
-            <div>
-              <strong>Status:</strong>{" "}
-              {isCheckingOut
-                ? "CHECKOUT"
-                : reservation.status}
-            </div>
-
-            <div>
-              <strong>Created:</strong>{" "}
-              {formatTime(reservation.createdAt)}
-            </div>
-
-            <div>
-              <strong>Expires:</strong>{" "}
-              {formatTime(reservation.expiresAt)}
-            </div>
+      {reservations.length === 0 && !isReserving ? (
+        <div className="order-placeholder">
+          <div className="order-symbol" aria-hidden="true">
+            🛒
           </div>
-        )}
 
-        {reservation?.status === "RESERVED" && (
-          <button
-            type="button"
-            className="buy-button"
-            style={{
-              maxWidth: 260,
-              margin: "16px auto",
-            }}
-            disabled={!canCheckout}
-            onClick={() =>
-              onCheckout(reservation.reservationId)
-            }
-          >
-            {isCheckingOut
-              ? "Processing..."
-              : "Checkout"}
-          </button>
-        )}
+          <p>Chưa có reservation nào.</p>
 
-        {isCheckingOut && (
-          <p>
-            Đang xác nhận đơn hàng, vui lòng chờ...
-          </p>
-        )}
+          <small>
+            Chọn Mua ngay để bắt đầu giữ hàng.
+          </small>
+        </div>
+      ) : (
+        <div className="reservation-list">
+          {reservations.map((reservation) => {
+            const isCheckingOut =
+              checkoutPendingIds.includes(
+                reservation.reservationId
+              );
 
-        <small>
-          Thanh toán hiện được mô phỏng bằng Promise.
-          Không có giao dịch tiền thật.
-        </small>
-      </div>
+            const canCheckout =
+              reservation.status === "RESERVED" &&
+              !isCheckingOut &&
+              Date.now() < reservation.expiresAt;
+
+            const style =
+              reservation.status === "COMPLETED" ||
+              reservation.status === "RESERVED"
+                ? "reservation-reserved"
+                : reservation.status === "FAILED"
+                  ? "reservation-failed"
+                  : reservation.status === "EXPIRED"
+                    ? "reservation-expired"
+                    : reservation.status === "CHECKOUT"
+                      ? "reservation-reserving"
+                      : "";
+
+            return (
+              <article
+                key={reservation.reservationId}
+                className={`order-placeholder ${style}`}
+              >
+                <p role="status">
+                  {statusMessage(reservation.status)}
+                </p>
+
+                <div className="reservation-details">
+                  <div>
+                    <strong>Reservation ID:</strong>{" "}
+                    <code>{reservation.reservationId}</code>
+                  </div>
+
+                  <div>
+                    <strong>Product:</strong>{" "}
+                    {reservation.productId}
+                  </div>
+
+                  <div>
+                    <strong>Quantity:</strong>{" "}
+                    {reservation.quantity}
+                  </div>
+
+                  <div>
+                    <strong>Status:</strong>{" "}
+                    {reservation.status}
+                  </div>
+
+                  <div>
+                    <strong>Created:</strong>{" "}
+                    {formatTime(reservation.createdAt)}
+                  </div>
+
+                  <div>
+                    <strong>Expires:</strong>{" "}
+                    {formatTime(reservation.expiresAt)}
+                  </div>
+                </div>
+
+                {reservation.status === "RESERVED" && (
+                  <button
+                    type="button"
+                    className="buy-button"
+                    style={{
+                      maxWidth: 260,
+                      margin: "16px auto",
+                    }}
+                    disabled={!canCheckout}
+                    onClick={() =>
+                      onCheckout(reservation.reservationId)
+                    }
+                  >
+                    Checkout
+                  </button>
+                )}
+
+                {reservation.status === "CHECKOUT" && (
+                  <p>Đang xử lý checkout...</p>
+                )}
+
+                {reservation.status === "COMPLETED" && (
+                  <small>
+                    Sản phẩm đã được ghi nhận là đã bán.
+                  </small>
+                )}
+
+                {reservation.status === "EXPIRED" && (
+                  <small>
+                    Hàng đã được trả về kho.
+                  </small>
+                )}
+
+                {reservation.status === "FAILED" && (
+                  <small>
+                    Checkout không thành công. Hàng đã được
+                    giải phóng.
+                  </small>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+
+      <small>
+        Thanh toán chỉ được mô phỏng trong trình duyệt.
+        Không phát sinh giao dịch thật.
+      </small>
     </section>
   );
 }
