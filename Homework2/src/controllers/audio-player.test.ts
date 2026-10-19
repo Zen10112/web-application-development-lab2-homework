@@ -1,10 +1,5 @@
 
-import {
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AudioPlayer } from "./audio-player";
 import { AudioTaskQueue } from "./audio-queue-controller";
 
@@ -58,7 +53,8 @@ describe("AudioPlayer", () => {
     await player.play("/audio/track-a.mp3");
 
     expect(queue.enqueue).toHaveBeenCalledWith(
-      "/audio/track-a.mp3"
+      "/audio/track-a.mp3",
+      expect.any(AbortSignal)
     );
 
     expect(source.start).toHaveBeenCalledTimes(1);
@@ -81,7 +77,19 @@ describe("AudioPlayer", () => {
     player.dispose();
   });
 
-  it("disconnects the analyser on dispose", () => {
+  it("does not globally cancel the shared queue", async () => {
+    const { player, queue } = createFixture();
+
+    await player.play("/audio/track-a.mp3");
+
+    player.stop();
+
+    expect(queue.cancelAll).not.toHaveBeenCalled();
+
+    player.dispose();
+  });
+
+  it("disconnects analyser on dispose", () => {
     const { player, analyser } = createFixture();
 
     player.dispose();
@@ -101,7 +109,7 @@ describe("AudioPlayer", () => {
     player.dispose();
   });
 
-  it("resumes a suspended AudioContext", async () => {
+  it("resumes suspended AudioContext", async () => {
     const { player, context } = createFixture();
 
     Object.defineProperty(context, "state", {
@@ -121,6 +129,25 @@ describe("AudioPlayer", () => {
     await player.play("/audio/track-a.mp3");
 
     expect(context.resume).toHaveBeenCalledTimes(1);
+
+    player.dispose();
+  });
+
+  it("ignores end callback after manual Stop", async () => {
+    const { player, source } = createFixture();
+
+    const onEnded = vi.fn();
+
+    await player.play("/audio/track-a.mp3", onEnded);
+
+    const oldCallback = source.onended;
+
+    player.stop();
+
+    // Simulate a late event from an old source.
+    oldCallback?.();
+
+    expect(onEnded).not.toHaveBeenCalled();
 
     player.dispose();
   });

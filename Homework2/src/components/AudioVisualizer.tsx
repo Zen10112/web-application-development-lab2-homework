@@ -8,6 +8,8 @@ interface AudioVisualizerProps {
 }
 
 const MAX_BARS = 64;
+const TARGET_FPS = 60;
+const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
 export default function AudioVisualizer({
   analyser,
@@ -16,33 +18,41 @@ export default function AudioVisualizer({
 }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationRef = useRef<number | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-
-  useEffect(() => {
-    analyserRef.current = analyser;
-  }, [analyser]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const node = analyserRef.current;
-
     if (!canvas) return;
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    const ctx = context;
 
     let disposed = false;
-
     let width = 0;
     let height = 0;
+    let lastFrameTime = 0;
 
-    let barGradient: CanvasGradient | null = null;
+    let gradient: CanvasGradient | null = null;
 
-    // Cancel any older animation loop.
+    const motionQuery = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    );
+
+    let reducedMotion = motionQuery.matches;
+
     if (animationRef.current !== null) {
       cancelAnimationFrame(animationRef.current);
       animationRef.current = null;
     }
+
+    if (analyser) {
+      analyser.fftSize = fftSize;
+    }
+
+    const frequencyData = analyser
+      ? new Uint8Array(analyser.frequencyBinCount)
+      : null;
 
     const drawBackground = () => {
       ctx.clearRect(0, 0, width, height);
@@ -52,6 +62,8 @@ export default function AudioVisualizer({
 
     const drawIdle = () => {
       drawBackground();
+
+      if (width <= 0 || height <= 0) return;
 
       ctx.fillStyle = "#cbd5e1";
       ctx.font = "15px Arial";
@@ -63,6 +75,121 @@ export default function AudioVisualizer({
         width / 2,
         height / 2
       );
+    };
+
+    const drawSpectrum = () => {
+      if (!analyser || !frequencyData) {
+        drawIdle();
+        return;
+      }
+
+      analyser.getByteFrequencyData(frequencyData);
+
+      drawBackground();
+
+      const barCount = Math.min(
+        MAX_BARS,
+        frequencyData.length
+      );
+
+      if (barCount === 0 || width <= 0 || height <= 0) {
+        return;
+      }
+
+      const gap = Math.min(
+        3,
+        width / (barCount * 3)
+      );
+
+      const barWidth = Math.max(
+        0,
+        (width - gap * (barCount - 1)) / barCount
+      );
+
+      const binsPerBar =
+        frequencyData.length / barCount;
+
+      ctx.fillStyle = gradient ?? "#38bdf8";
+
+      for (let i = 0; i < barCount; i++) {
+        const start = Math.floor(
+          i * binsPerBar
+        );
+
+        const end = Math.max(
+          start + 1,
+          Math.floor((i + 1) * binsPerBar)
+        );
+
+        let sum = 0;
+
+        for (let j = start; j < end; j++) {
+          sum += frequencyData[j];
+        }
+
+        const average = sum / (end - start);
+        const normalized = average / 255;
+
+        const barHeight = Math.max(
+          2,
+          normalized * Math.max(0, height - 12)
+        );
+
+        const x = i * (barWidth + gap);
+        const y = height - barHeight;
+
+        ctx.fillRect(
+          x,
+          y,
+          barWidth,
+          barHeight
+        );
+      }
+    };
+
+    const draw = (timestamp: number) => {
+      if (disposed || !isPlaying || reducedMotion) {
+        animationRef.current = null;
+        return;
+      }
+
+      // Cap expensive Canvas drawing near 60 FPS.
+      // The 1ms tolerance avoids unnecessarily skipping
+      // every other frame on some 60Hz displays.
+      if (
+        lastFrameTime === 0 ||
+        timestamp - lastFrameTime >= FRAME_INTERVAL - 1
+      ) {
+        lastFrameTime = timestamp;
+        drawSpectrum();
+      }
+
+      animationRef.current =
+        requestAnimationFrame(draw);
+    };
+
+    const startAnimation = () => {
+      if (
+        disposed ||
+        !isPlaying ||
+        !analyser ||
+        reducedMotion ||
+        animationRef.current !== null
+      ) {
+        return;
+      }
+
+      lastFrameTime = 0;
+
+      animationRef.current =
+        requestAnimationFrame(draw);
+    };
+
+    const stopAnimation = () => {
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
     };
 
     const resizeCanvas = () => {
@@ -98,21 +225,38 @@ export default function AudioVisualizer({
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // Reuse one gradient until the canvas size changes.
-      barGradient = ctx.createLinearGradient(
+      gradient = ctx.createLinearGradient(
         0,
         0,
         0,
         height
       );
 
-      barGradient.addColorStop(0, "#38bdf8");
-      barGradient.addColorStop(0.5, "#6366f1");
-      barGradient.addColorStop(1, "#a855f7");
+      gradient.addColorStop(0, "#38bdf8");
+      gradient.addColorStop(0.5, "#6366f1");
+      gradient.addColorStop(1, "#a855f7");
 
-      // Keep idle canvas visible after a resize.
-      if (!isPlaying || !node) {
+      // Render a static spectrum for reduced-motion users.
+      if (isPlaying && analyser) {
+        drawSpectrum();
+      } else {
         drawIdle();
+      }
+    };
+
+    const handleMotionChange = (
+      event: MediaQueryListEvent
+    ) => {
+      reducedMotion = event.matches;
+
+      if (reducedMotion) {
+        stopAnimation();
+
+        if (isPlaying && analyser) {
+          drawSpectrum();
+        }
+      } else {
+        startAnimation();
       }
     };
 
@@ -121,102 +265,28 @@ export default function AudioVisualizer({
     );
 
     resizeObserver.observe(canvas);
-    resizeCanvas();
 
-    if (!isPlaying || !node) {
-      return () => {
-        disposed = true;
-        resizeObserver.disconnect();
-      };
-    }
-
-    node.fftSize = fftSize;
-
-    const frequencyData = new Uint8Array(
-      node.frequencyBinCount
+    motionQuery.addEventListener(
+      "change",
+      handleMotionChange
     );
 
-    const draw = () => {
-      if (disposed) return;
+    resizeCanvas();
 
-      node.getByteFrequencyData(frequencyData);
-
-      drawBackground();
-
-      const barCount = Math.min(
-        MAX_BARS,
-        frequencyData.length
-      );
-
-      if (barCount > 0 && width > 0 && height > 0) {
-        const gap = Math.min(
-          3,
-          width / (barCount * 3)
-        );
-
-        const barWidth = Math.max(
-          0,
-          (width - gap * (barCount - 1)) / barCount
-        );
-
-        const binsPerBar =
-          frequencyData.length / barCount;
-
-        ctx.fillStyle = barGradient ?? "#38bdf8";
-
-        for (let i = 0; i < barCount; i++) {
-          const start = Math.floor(
-            i * binsPerBar
-          );
-
-          const end = Math.max(
-            start + 1,
-            Math.floor((i + 1) * binsPerBar)
-          );
-
-          let sum = 0;
-
-          for (let j = start; j < end; j++) {
-            sum += frequencyData[j];
-          }
-
-          const average = sum / (end - start);
-          const normalized = average / 255;
-
-          const barHeight = Math.max(
-            2,
-            normalized * Math.max(0, height - 12)
-          );
-
-          const x = i * (barWidth + gap);
-          const y = height - barHeight;
-
-          ctx.fillRect(
-            x,
-            y,
-            barWidth,
-            barHeight
-          );
-        }
-      }
-
-      // Only one requestAnimationFrame chain.
-      animationRef.current =
-        requestAnimationFrame(draw);
-    };
-
-    animationRef.current =
-      requestAnimationFrame(draw);
+    if (isPlaying && analyser && !reducedMotion) {
+      startAnimation();
+    }
 
     return () => {
       disposed = true;
 
-      if (animationRef.current !== null) {
-        cancelAnimationFrame(animationRef.current);
-        animationRef.current = null;
-      }
-
+      stopAnimation();
       resizeObserver.disconnect();
+
+      motionQuery.removeEventListener(
+        "change",
+        handleMotionChange
+      );
     };
   }, [analyser, isPlaying, fftSize]);
 
@@ -236,7 +306,7 @@ export default function AudioVisualizer({
         role="img"
         aria-label={
           isPlaying
-            ? "Animated audio frequency spectrum"
+            ? "Audio frequency spectrum"
             : "Audio frequency visualizer is idle"
         }
       />

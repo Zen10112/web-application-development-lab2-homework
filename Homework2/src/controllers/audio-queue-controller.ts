@@ -11,6 +11,7 @@ interface AudioTask {
   settled: boolean;
   resolve: (buffer: AudioBuffer) => void;
   reject: (reason: unknown) => void;
+  cleanup: () => void;
 }
 
 export function createAbortError(): DOMException {
@@ -23,7 +24,6 @@ export function createAbortError(): DOMException {
 export class AudioTaskQueue {
   private queue: AudioTask[] = [];
   private isProcessing = false;
-  private activeController: AbortController | null = null;
   private activeTask: AudioTask | null = null;
   private disposed = false;
 
@@ -33,7 +33,6 @@ export class AudioTaskQueue {
       AudioTaskQueue.defaultTrackLoader
   ) {}
 
-  // Download audio and decode it into AudioBuffer.
   private static async defaultTrackLoader(
     trackUrl: string,
     signal: AbortSignal,
@@ -57,12 +56,11 @@ export class AudioTaskQueue {
       throw createAbortError();
     }
 
-    // decodeAudioData cannot be directly aborted.
+    // decodeAudioData cannot be aborted directly.
     const buffer = await audioContext.decodeAudioData(
       arrayBuffer
     );
 
-    // Cancellation could happen during decoding.
     if (signal.aborted) {
       throw createAbortError();
     }
@@ -77,6 +75,7 @@ export class AudioTaskQueue {
     if (task.settled) return;
 
     task.settled = true;
+    task.cleanup();
     task.resolve(buffer);
   }
 
@@ -87,16 +86,39 @@ export class AudioTaskQueue {
     if (task.settled) return;
 
     task.settled = true;
+    task.cleanup();
     task.reject(reason);
   }
 
+  private cancelTask(task: AudioTask): void {
+    if (task.settled) return;
+
+    // Abort the task's fetch operation.
+    task.controller.abort();
+
+    // Remove it if it has not started processing.
+    const index = this.queue.indexOf(task);
+
+    if (index !== -1) {
+      this.queue.splice(index, 1);
+    }
+
+    // Reject immediately, even if decoding is still running.
+    this.rejectTask(task, createAbortError());
+  }
+
   public enqueue(
-    trackUrl: string
+    trackUrl: string,
+    signal?: AbortSignal
   ): Promise<AudioBuffer> {
     if (this.disposed) {
       return Promise.reject(
         new Error("Queue has been disposed")
       );
+    }
+
+    if (signal?.aborted) {
+      return Promise.reject(createAbortError());
     }
 
     const controller = new AbortController();
@@ -108,11 +130,31 @@ export class AudioTaskQueue {
         settled: false,
         resolve,
         reject,
+        cleanup: () => {},
       };
+
+      if (signal) {
+        const onAbort = () => {
+          this.cancelTask(task);
+        };
+
+        signal.addEventListener("abort", onAbort, {
+          once: true,
+        });
+
+        task.cleanup = () => {
+          signal.removeEventListener("abort", onAbort);
+        };
+      }
 
       this.queue.push(task);
 
-      // The processing flag prevents multiple workers.
+      // Handle a signal aborted during registration.
+      if (signal?.aborted) {
+        this.cancelTask(task);
+        return;
+      }
+
       void this.processNext();
     });
   }
@@ -122,17 +164,18 @@ export class AudioTaskQueue {
       return;
     }
 
-    // Set synchronously before the first await.
+    // Lock before the first await.
     this.isProcessing = true;
 
     try {
       while (!this.disposed && this.queue.length > 0) {
         const task = this.queue.shift();
 
-        if (!task) continue;
+        if (!task || task.settled) {
+          continue;
+        }
 
         this.activeTask = task;
-        this.activeController = task.controller;
 
         try {
           if (task.controller.signal.aborted) {
@@ -155,40 +198,28 @@ export class AudioTaskQueue {
         } finally {
           if (this.activeTask === task) {
             this.activeTask = null;
-            this.activeController = null;
           }
         }
       }
     } finally {
       this.isProcessing = false;
 
-      // Defensive recovery if a new task was queued.
       if (!this.disposed && this.queue.length > 0) {
         void this.processNext();
       }
     }
   }
 
-  // Immediately reject promises and abort active fetch.
+  // Global cancellation, used only when explicitly required.
   public cancelAll(): void {
     if (this.activeTask) {
-      this.activeController?.abort();
-
-      this.rejectTask(
-        this.activeTask,
-        createAbortError()
-      );
+      this.cancelTask(this.activeTask);
     }
 
-    const pendingTasks = this.queue.splice(0);
+    const waiting = [...this.queue];
 
-    for (const task of pendingTasks) {
-      task.controller.abort();
-
-      this.rejectTask(
-        task,
-        createAbortError()
-      );
+    for (const task of waiting) {
+      this.cancelTask(task);
     }
   }
 

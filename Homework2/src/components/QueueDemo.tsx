@@ -1,8 +1,6 @@
 
 import { useEffect, useRef, useState } from "react";
-import {
-  AudioTaskQueue,
-} from "../controllers/audio-queue-controller";
+import { AudioTaskQueue } from "../controllers/audio-queue-controller";
 import { AudioPlayer } from "../controllers/audio-player";
 import { demoTracks } from "../data/demo-tracks";
 import AudioVisualizer from "./AudioVisualizer";
@@ -13,13 +11,13 @@ interface AudioEngine {
   player: AudioPlayer;
 }
 
-export default function QueueDemo() {
-  // Keep audio objects alive across React renders.
-  const engineRef = useRef<AudioEngine | null>(null);
+type DashboardMode = "idle" | "loading" | "playing" | "testing";
 
-  // Prevent outdated async operations from updating UI.
+export default function QueueDemo() {
+  const engineRef = useRef<AudioEngine | null>(null);
   const operationRef = useRef(0);
   const mountedRef = useRef(false);
+  const modeRef = useRef<DashboardMode>("idle");
 
   const [analyser, setAnalyser] =
     useState<AnalyserNode | null>(null);
@@ -30,7 +28,6 @@ export default function QueueDemo() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [busy, setBusy] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(-1);
-
   const [status, setStatus] = useState("Idle");
   const [pendingCount, setPendingCount] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
@@ -49,9 +46,7 @@ export default function QueueDemo() {
         engine.queue.dispose();
 
         if (engine.context.state !== "closed") {
-          void engine.context.close().catch(
-            console.error
-          );
+          void engine.context.close().catch(console.error);
         }
       }
 
@@ -62,10 +57,7 @@ export default function QueueDemo() {
   const addLog = (message: string) => {
     if (!mountedRef.current) return;
 
-    setLogs((previous) => [
-      ...previous,
-      message,
-    ]);
+    setLogs((previous) => [...previous, message]);
   };
 
   const updateQueueStatus = () => {
@@ -76,7 +68,6 @@ export default function QueueDemo() {
     setPendingCount(queue.getPendingCount());
   };
 
-  // Create a single AudioContext, Queue and Player.
   const getEngine = (): AudioEngine => {
     if (engineRef.current) {
       return engineRef.current;
@@ -88,23 +79,13 @@ export default function QueueDemo() {
 
     player.setFFTSize(fftSize);
 
-    player.onPlaybackEnded = () => {
-      if (!mountedRef.current) return;
-
-      setIsPlaying(false);
-      setStatus("Playback finished");
-      addLog("Playback ended naturally");
-    };
-
-    const engine = {
+    const engine: AudioEngine = {
       context,
       queue,
       player,
     };
 
     engineRef.current = engine;
-
-    // Only updates when engine is initialized.
     setAnalyser(player.getAnalyser());
 
     return engine;
@@ -112,17 +93,16 @@ export default function QueueDemo() {
 
   const handleFFTChange = (size: 256 | 512) => {
     setFFTSize(size);
-
     engineRef.current?.player.setFFTSize(size);
-
     addLog(`FFT size changed to ${size}`);
   };
 
   const playTrack = async (index: number) => {
-    const operation = ++operationRef.current;
     const track = demoTracks[index];
-
     if (!track) return;
+
+    const operation = ++operationRef.current;
+    modeRef.current = "loading";
 
     setBusy(true);
     setIsPlaying(false);
@@ -133,11 +113,27 @@ export default function QueueDemo() {
 
       addLog(`Request playback: ${track.name}`);
 
-      await player.play(track.url);
+      await player.play(track.url, () => {
+        // Ignore natural-end callbacks from outdated operations.
+        if (
+          !mountedRef.current ||
+          operation !== operationRef.current ||
+          modeRef.current === "testing" ||
+          modeRef.current === "idle"
+        ) {
+          return;
+        }
+
+        modeRef.current = "idle";
+        setIsPlaying(false);
+        setBusy(false);
+        setStatus("Playback finished");
+        addLog(`Playback ended: ${track.name}`);
+      });
 
       if (
-        operation !== operationRef.current ||
-        !mountedRef.current
+        !mountedRef.current ||
+        operation !== operationRef.current
       ) {
         return;
       }
@@ -145,36 +141,36 @@ export default function QueueDemo() {
       updateQueueStatus();
 
       if (player.getIsPlaying()) {
+        modeRef.current = "playing";
         setCurrentIndex(index);
         setIsPlaying(true);
         setStatus(`Playing: ${track.name}`);
-
         addLog(`Playback started: ${track.name}`);
       } else {
+        modeRef.current = "idle";
         setIsPlaying(false);
         setStatus("Playback finished");
       }
     } catch (error) {
       if (
-        operation !== operationRef.current ||
-        !mountedRef.current
+        !mountedRef.current ||
+        operation !== operationRef.current
       ) {
         return;
       }
 
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
+      modeRef.current = "idle";
       setIsPlaying(false);
       setStatus("Playback error");
+
+      const message =
+        error instanceof Error ? error.message : String(error);
 
       addLog(`ERROR: ${message}`);
     } finally {
       if (
-        operation === operationRef.current &&
-        mountedRef.current
+        mountedRef.current &&
+        operation === operationRef.current
       ) {
         setBusy(false);
         updateQueueStatus();
@@ -184,6 +180,7 @@ export default function QueueDemo() {
 
   const stopPlayback = () => {
     operationRef.current++;
+    modeRef.current = "idle";
 
     engineRef.current?.player.stop();
 
@@ -191,9 +188,9 @@ export default function QueueDemo() {
     setBusy(false);
     setCurrentIndex(-1);
     setStatus("Stopped");
-    setPendingCount(0);
 
-    addLog("Playback stopped and queue cancelled");
+    updateQueueStatus();
+    addLog("Playback stopped");
   };
 
   const nextTrack = () => {
@@ -206,27 +203,29 @@ export default function QueueDemo() {
   const runConcurrentTest = async () => {
     const operation = ++operationRef.current;
 
+    modeRef.current = "testing";
+
+    // Stop previous playback before updating test UI.
+    const { queue, player } = getEngine();
+    player.stop();
+
     setBusy(true);
     setIsPlaying(false);
     setCurrentIndex(-1);
     setStatus("Testing FIFO Queue...");
 
+    addLog("Starting concurrent FIFO test");
+
     try {
-      const { queue, player } = getEngine();
-
-      // Stop playback before testing decoding.
-      player.stop();
-
-      addLog("Starting concurrent FIFO test");
-
       const tasks = demoTracks.map((track) => {
         addLog(`ENQUEUED: ${track.name}`);
 
-        const promise = queue.enqueue(track.url);
-
-        return promise.then(
+        return queue.enqueue(track.url).then(
           (buffer) => {
-            if (operation === operationRef.current) {
+            if (
+              mountedRef.current &&
+              operation === operationRef.current
+            ) {
               addLog(`RESOLVED: ${track.name}`);
               updateQueueStatus();
             }
@@ -234,7 +233,10 @@ export default function QueueDemo() {
             return buffer;
           },
           (error: unknown) => {
-            if (operation === operationRef.current) {
+            if (
+              mountedRef.current &&
+              operation === operationRef.current
+            ) {
               const message =
                 error instanceof Error
                   ? error.message
@@ -257,8 +259,8 @@ export default function QueueDemo() {
       const results = await Promise.allSettled(tasks);
 
       if (
-        operation !== operationRef.current ||
-        !mountedRef.current
+        !mountedRef.current ||
+        operation !== operationRef.current
       ) {
         return;
       }
@@ -277,20 +279,24 @@ export default function QueueDemo() {
         `Results: ${success} success, ${failure} failed`
       );
     } catch (error) {
-      if (operation !== operationRef.current) return;
+      if (
+        !mountedRef.current ||
+        operation !== operationRef.current
+      ) {
+        return;
+      }
 
       const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
+        error instanceof Error ? error.message : String(error);
 
       setStatus("FIFO test failed");
       addLog(`ERROR: ${message}`);
     } finally {
       if (
-        operation === operationRef.current &&
-        mountedRef.current
+        mountedRef.current &&
+        operation === operationRef.current
       ) {
+        modeRef.current = "idle";
         setBusy(false);
         updateQueueStatus();
       }
@@ -301,24 +307,21 @@ export default function QueueDemo() {
     <section className="audio-dashboard">
       <div className="dashboard-heading">
         <h2>Audio Queue Dashboard</h2>
-        <p>
-          Web Audio API - FFT Frequency Visualization
-        </p>
+        <p>Web Audio API - FFT Frequency Visualization</p>
       </div>
 
-      {/* TRACK LIST */}
       <div className="dashboard-card">
         <h3>Music Library</h3>
 
         <div className="track-list">
           {demoTracks.map((track, index) => (
             <div
+              key={track.id}
               className={
                 currentIndex === index && isPlaying
                   ? "track-item active-track"
                   : "track-item"
               }
-              key={track.id}
             >
               <div className="track-info">
                 <span className="track-icon" aria-hidden="true">
@@ -343,7 +346,6 @@ export default function QueueDemo() {
         </div>
       </div>
 
-      {/* PLAYBACK CONTROLS */}
       <div className="dashboard-card">
         <h3>Playback Controls</h3>
 
@@ -352,6 +354,7 @@ export default function QueueDemo() {
             type="button"
             className="stop-button"
             onClick={stopPlayback}
+            disabled={modeRef.current === "testing"}
           >
             Stop
           </button>
@@ -366,7 +369,6 @@ export default function QueueDemo() {
         </div>
       </div>
 
-      {/* FFT SETTINGS */}
       <div className="dashboard-card">
         <h3>FFT Configuration</h3>
 
@@ -377,9 +379,7 @@ export default function QueueDemo() {
         >
           <button
             type="button"
-            className={
-              fftSize === 256 ? "fft-active" : ""
-            }
+            className={fftSize === 256 ? "fft-active" : ""}
             aria-pressed={fftSize === 256}
             onClick={() => handleFFTChange(256)}
           >
@@ -388,9 +388,7 @@ export default function QueueDemo() {
 
           <button
             type="button"
-            className={
-              fftSize === 512 ? "fft-active" : ""
-            }
+            className={fftSize === 512 ? "fft-active" : ""}
             aria-pressed={fftSize === 512}
             onClick={() => handleFFTChange(512)}
           >
@@ -399,14 +397,12 @@ export default function QueueDemo() {
         </div>
       </div>
 
-      {/* VISUALIZER */}
       <AudioVisualizer
         analyser={analyser}
         isPlaying={isPlaying}
         fftSize={fftSize}
       />
 
-      {/* QUEUE STATUS */}
       <div className="dashboard-card">
         <h3>Queue Status</h3>
 
@@ -423,9 +419,7 @@ export default function QueueDemo() {
 
           <div className="status-box">
             <span>Playback</span>
-            <strong>
-              {isPlaying ? "Playing" : "Stopped"}
-            </strong>
+            <strong>{isPlaying ? "Playing" : "Stopped"}</strong>
           </div>
         </div>
 
@@ -440,7 +434,6 @@ export default function QueueDemo() {
         </div>
       </div>
 
-      {/* EXECUTION LOG */}
       <div className="dashboard-card">
         <h3>Execution Log</h3>
 
@@ -455,9 +448,7 @@ export default function QueueDemo() {
           ) : (
             <ol>
               {logs.map((message, index) => (
-                <li key={index}>
-                  {message}
-                </li>
+                <li key={index}>{message}</li>
               ))}
             </ol>
           )}
