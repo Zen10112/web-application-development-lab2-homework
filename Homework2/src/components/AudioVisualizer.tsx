@@ -7,16 +7,17 @@ interface AudioVisualizerProps {
   fftSize: 256 | 512;
 }
 
+const MAX_BARS = 64;
+
 export default function AudioVisualizer({
   analyser,
   isPlaying,
   fftSize,
 }: AudioVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const animationRef = useRef<number | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
 
-  // Store the analyser without causing a re-render.
   useEffect(() => {
     analyserRef.current = analyser;
   }, [analyser]);
@@ -27,123 +28,147 @@ export default function AudioVisualizer({
 
     if (!canvas) return;
 
-    const context = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-    if (!context) return;
+    let disposed = false;
 
-    // Stop any previous animation loop.
+    let width = 0;
+    let height = 0;
+
+    let barGradient: CanvasGradient | null = null;
+
+    // Cancel any older animation loop.
     if (animationRef.current !== null) {
       cancelAnimationFrame(animationRef.current);
       animationRef.current = null;
     }
 
-    const resizeCanvas = () => {
-      const rect = canvas.getBoundingClientRect();
-
-      const dpr = Math.min(
-        window.devicePixelRatio || 1,
-        2
-      );
-
-      canvas.width = Math.max(
-        1,
-        Math.round(rect.width * dpr)
-      );
-
-      canvas.height = Math.max(
-        1,
-        Math.round(rect.height * dpr)
-      );
-
-      context.setTransform(
-        dpr, 0, 0, dpr, 0, 0
-      );
-    };
-
-    resizeCanvas();
-
-    const observer = new ResizeObserver(resizeCanvas);
-    observer.observe(canvas);
-
-    const drawBackground = (
-      width: number,
-      height: number
-    ) => {
-      context.clearRect(0, 0, width, height);
-
-      context.fillStyle = "#0f172a";
-      context.fillRect(0, 0, width, height);
+    const drawBackground = () => {
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#0f172a";
+      ctx.fillRect(0, 0, width, height);
     };
 
     const drawIdle = () => {
-      const { width, height } =
-        canvas.getBoundingClientRect();
+      drawBackground();
 
-      drawBackground(width, height);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "15px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
 
-      context.fillStyle = "#94a3b8";
-      context.font = "15px Arial";
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-
-      context.fillText(
+      ctx.fillText(
         "Play a track to visualize audio",
         width / 2,
         height / 2
       );
     };
 
-    if (!isPlaying || !node) {
-      drawIdle();
+    const resizeCanvas = () => {
+      if (disposed) return;
 
+      const rect = canvas.getBoundingClientRect();
+
+      width = rect.width;
+      height = rect.height;
+
+      const dpr = Math.min(
+        window.devicePixelRatio || 1,
+        2
+      );
+
+      const pixelWidth = Math.max(
+        1,
+        Math.round(width * dpr)
+      );
+
+      const pixelHeight = Math.max(
+        1,
+        Math.round(height * dpr)
+      );
+
+      if (
+        canvas.width !== pixelWidth ||
+        canvas.height !== pixelHeight
+      ) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // Reuse one gradient until the canvas size changes.
+      barGradient = ctx.createLinearGradient(
+        0,
+        0,
+        0,
+        height
+      );
+
+      barGradient.addColorStop(0, "#38bdf8");
+      barGradient.addColorStop(0.5, "#6366f1");
+      barGradient.addColorStop(1, "#a855f7");
+
+      // Keep idle canvas visible after a resize.
+      if (!isPlaying || !node) {
+        drawIdle();
+      }
+    };
+
+    const resizeObserver = new ResizeObserver(
+      resizeCanvas
+    );
+
+    resizeObserver.observe(canvas);
+    resizeCanvas();
+
+    if (!isPlaying || !node) {
       return () => {
-        observer.disconnect();
+        disposed = true;
+        resizeObserver.disconnect();
       };
     }
 
     node.fftSize = fftSize;
 
-    // FFT size 256 -> 128 frequency bins.
-    // FFT size 512 -> 256 frequency bins.
     const frequencyData = new Uint8Array(
       node.frequencyBinCount
     );
 
-    let lastFrameTime = 0;
+    const draw = () => {
+      if (disposed) return;
 
-    const draw = (timestamp: number) => {
-      // Animation is limited to approximately 60 FPS.
-      // The browser may render slower on some devices.
-      const elapsed = timestamp - lastFrameTime;
+      node.getByteFrequencyData(frequencyData);
 
-      if (elapsed >= 1000 / 60) {
-        lastFrameTime = timestamp;
+      drawBackground();
 
-        node.getByteFrequencyData(frequencyData);
+      const barCount = Math.min(
+        MAX_BARS,
+        frequencyData.length
+      );
 
-        const rect = canvas.getBoundingClientRect();
-        const width = rect.width;
-        const height = rect.height;
-
-        drawBackground(width, height);
-
-        const maxBars = 64;
-        const barCount = Math.min(
-          maxBars,
-          frequencyData.length
+      if (barCount > 0 && width > 0 && height > 0) {
+        const gap = Math.min(
+          3,
+          width / (barCount * 3)
         );
 
-        const gap = 3;
         const barWidth = Math.max(
-          1,
+          0,
           (width - gap * (barCount - 1)) / barCount
         );
 
         const binsPerBar =
           frequencyData.length / barCount;
 
+        ctx.fillStyle = barGradient ?? "#38bdf8";
+
         for (let i = 0; i < barCount; i++) {
-          const start = Math.floor(i * binsPerBar);
+          const start = Math.floor(
+            i * binsPerBar
+          );
+
           const end = Math.max(
             start + 1,
             Math.floor((i + 1) * binsPerBar)
@@ -160,27 +185,13 @@ export default function AudioVisualizer({
 
           const barHeight = Math.max(
             2,
-            normalized * (height - 20)
+            normalized * Math.max(0, height - 12)
           );
 
           const x = i * (barWidth + gap);
           const y = height - barHeight;
 
-          const gradient =
-            context.createLinearGradient(
-              0,
-              y,
-              0,
-              height
-            );
-
-          gradient.addColorStop(0, "#38bdf8");
-          gradient.addColorStop(0.5, "#6366f1");
-          gradient.addColorStop(1, "#a855f7");
-
-          context.fillStyle = gradient;
-
-          context.fillRect(
+          ctx.fillRect(
             x,
             y,
             barWidth,
@@ -189,6 +200,7 @@ export default function AudioVisualizer({
         }
       }
 
+      // Only one requestAnimationFrame chain.
       animationRef.current =
         requestAnimationFrame(draw);
     };
@@ -197,12 +209,14 @@ export default function AudioVisualizer({
       requestAnimationFrame(draw);
 
     return () => {
+      disposed = true;
+
       if (animationRef.current !== null) {
         cancelAnimationFrame(animationRef.current);
         animationRef.current = null;
       }
 
-      observer.disconnect();
+      resizeObserver.disconnect();
     };
   }, [analyser, isPlaying, fftSize]);
 

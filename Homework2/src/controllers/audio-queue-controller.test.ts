@@ -1,142 +1,245 @@
-import { describe, expect, it } from "vitest";
-import { AudioTaskQueue, type TrackLoader } from "./audio-queue-controller";
 
-const fakeAudioContext = {} as AudioContext;
+import { describe, expect, it } from "vitest";
+import {
+  AudioTaskQueue,
+  type TrackLoader,
+} from "./audio-queue-controller";
+
+const fakeContext = {} as AudioContext;
 const fakeBuffer = {} as AudioBuffer;
-const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
+}
 
 describe("AudioTaskQueue", () => {
-  it("handles tasks in strict FIFO order", async () => {
+  it("processes tasks in strict FIFO order", async () => {
     const events: string[] = [];
-    const loader: TrackLoader = async url => {
+
+    const loader: TrackLoader = async (url) => {
       events.push(`start:${url}`);
       await sleep(url === "A" ? 25 : 5);
       events.push(`end:${url}`);
       return fakeBuffer;
     };
-    const queue = new AudioTaskQueue(fakeAudioContext, loader);
-    await Promise.all([queue.enqueue("A"), queue.enqueue("B"), queue.enqueue("C")]);
-    expect(events).toEqual(["start:A", "end:A", "start:B", "end:B", "start:C", "end:C"]);
+
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
+    await Promise.all([
+      queue.enqueue("A"),
+      queue.enqueue("B"),
+      queue.enqueue("C"),
+    ]);
+
+    expect(events).toEqual([
+      "start:A",
+      "end:A",
+      "start:B",
+      "end:B",
+      "start:C",
+      "end:C",
+    ]);
+
     queue.dispose();
   });
 
-  it("runs at most one worker at a time", async () => {
+  it("never executes two loaders simultaneously", async () => {
     let active = 0;
     let maxActive = 0;
+
     const loader: TrackLoader = async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      try { await sleep(5); return fakeBuffer; }
-      finally { active--; }
+
+      try {
+        await sleep(5);
+        return fakeBuffer;
+      } finally {
+        active--;
+      }
     };
-    const queue = new AudioTaskQueue(fakeAudioContext, loader);
-    await Promise.all(Array.from({ length: 10 }, (_, i) => queue.enqueue(`track-${i}`)));
+
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
+    await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        queue.enqueue(`track-${index}`)
+      )
+    );
+
     expect(maxActive).toBe(1);
     queue.dispose();
   });
 
-  it("keeps processing after a failure", async () => {
-    const events: string[] = [];
-    const loader: TrackLoader = async url => {
-      events.push(url);
-      if (url === "B") throw new Error("Decode failed");
+  it("continues after a failed download", async () => {
+    const processed: string[] = [];
+
+    const loader: TrackLoader = async (url) => {
+      processed.push(url);
+
+      if (url === "B") {
+        throw new Error("HTTP 404");
+      }
+
       return fakeBuffer;
     };
-    const queue = new AudioTaskQueue(fakeAudioContext, loader);
+
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
     const results = await Promise.allSettled([
-      queue.enqueue("A"), queue.enqueue("B"), queue.enqueue("C")
+      queue.enqueue("A"),
+      queue.enqueue("B"),
+      queue.enqueue("C"),
     ]);
-    expect(results.map(result => result.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
-    expect(events).toEqual(["A", "B", "C"]);
+
+    expect(results.map((r) => r.status)).toEqual([
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+    ]);
+
+    expect(processed).toEqual(["A", "B", "C"]);
+
     queue.dispose();
   });
 
-  it("rejects cancelled active and queued tasks", async () => {
-    let releaseFirst!: () => void;
-    const gate = new Promise<void>(resolve => { releaseFirst = resolve; });
-    const loader: TrackLoader = async url => {
-      if (url === "A") await gate;
+  it("rejects active and waiting tasks on cancelAll", async () => {
+    const gate = deferred<void>();
+
+    const loader: TrackLoader = async (url) => {
+      if (url === "A") {
+        await gate.promise;
+      }
+
       return fakeBuffer;
     };
-    const queue = new AudioTaskQueue(fakeAudioContext, loader);
-    const tasks = [queue.enqueue("A"), queue.enqueue("B"), queue.enqueue("C")];
+
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
+    const tasks = [
+      queue.enqueue("A"),
+      queue.enqueue("B"),
+      queue.enqueue("C"),
+    ];
+
     queue.cancelAll();
-    releaseFirst();
+
     const results = await Promise.allSettled(tasks);
-    expect(results.every(result => result.status === "rejected")).toBe(true);
+
+    expect(
+      results.every((r) => r.status === "rejected")
+    ).toBe(true);
+
+    gate.resolve();
     queue.dispose();
   });
 
-  
-it("rejects an active task immediately when cancelled", async () => {
-  let releaseDecode!: () => void;
+  it("rejects immediately during non-abortable decode", async () => {
+    const gate = deferred<AudioBuffer>();
 
-  const decoding = new Promise<void>((resolve) => {
-    releaseDecode = resolve;
+    const loader: TrackLoader = async () => gate.promise;
+
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
+    const result = queue.enqueue("A").then(
+      () => "fulfilled",
+      () => "rejected"
+    );
+
+    queue.cancelAll();
+
+    expect(await result).toBe("rejected");
+
+    gate.resolve(fakeBuffer);
+    queue.dispose();
   });
 
-  const loader: TrackLoader = async () => {
-    await decoding;
-    return fakeBuffer;
-  };
+  it("can process new tasks after cancellation", async () => {
+    const gate = deferred<AudioBuffer>();
+    const events: string[] = [];
 
-  const queue = new AudioTaskQueue(
-    fakeAudioContext,
-    loader
-  );
+    const loader: TrackLoader = async (url) => {
+      events.push(`start:${url}`);
 
-  const result = queue.enqueue("track-a").then(
-    () => "fulfilled",
-    () => "rejected"
-  );
+      if (url === "A") {
+        return gate.promise;
+      }
 
-  queue.cancelAll();
+      return fakeBuffer;
+    };
 
-  expect(await result).toBe("rejected");
+    const queue = new AudioTaskQueue(fakeContext, loader);
 
-  // Allow underlying decode simulation to finish.
-  releaseDecode();
+    const first = queue.enqueue("A");
+    queue.cancelAll();
 
-  queue.dispose();
-});
+    const second = queue.enqueue("B");
 
-it("processes the next track after a failed download", async () => {
-  const processed: string[] = [];
+    // The cancelled decoder is still running.
+    expect(events).toEqual(["start:A"]);
 
-  const loader: TrackLoader = async (url) => {
-    processed.push(url);
+    gate.resolve(fakeBuffer);
 
-    if (url === "track-b") {
-      throw new Error("HTTP 404");
-    }
+    const results = await Promise.allSettled([
+      first,
+      second,
+    ]);
 
-    return fakeBuffer;
-  };
+    expect(results[0].status).toBe("rejected");
+    expect(results[1].status).toBe("fulfilled");
+    expect(events).toEqual(["start:A", "start:B"]);
 
-  const queue = new AudioTaskQueue(
-    fakeAudioContext,
-    loader
-  );
+    queue.dispose();
+  });
 
-  const results = await Promise.allSettled([
-    queue.enqueue("track-a"),
-    queue.enqueue("track-b"),
-    queue.enqueue("track-c"),
-  ]);
+  it("rejects new tasks after dispose", async () => {
+    const loader: TrackLoader = async () => fakeBuffer;
+    const queue = new AudioTaskQueue(fakeContext, loader);
 
-  expect(results.map((result) => result.status)).toEqual([
-    "fulfilled",
-    "rejected",
-    "fulfilled",
-  ]);
+    queue.dispose();
 
-  expect(processed).toEqual([
-    "track-a",
-    "track-b",
-    "track-c",
-  ]);
+    await expect(queue.enqueue("A")).rejects.toThrow(
+      "Queue has been disposed"
+    );
+  });
 
-  queue.dispose();
-});
+  it("does not settle an aborted task twice", async () => {
+    const gate = deferred<AudioBuffer>();
 
+    const loader: TrackLoader = async () => gate.promise;
+    const queue = new AudioTaskQueue(fakeContext, loader);
+
+    let settlements = 0;
+
+    const task = queue.enqueue("A").then(
+      () => {
+        settlements++;
+      },
+      () => {
+        settlements++;
+      }
+    );
+
+    queue.cancelAll();
+
+    await task;
+
+    gate.resolve(fakeBuffer);
+    await sleep(0);
+
+    expect(settlements).toBe(1);
+
+    queue.dispose();
+  });
 });
