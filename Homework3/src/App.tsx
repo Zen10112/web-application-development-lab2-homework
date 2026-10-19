@@ -1,37 +1,38 @@
 
-import { useState } from "react";
-
 import FlashSaleHeader from "./components/FlashSaleHeader";
 import ProductGrid from "./components/ProductGrid";
 import OrderStatus from "./components/OrderStatus";
 
-import { products } from "./data/products";
-import type { Product } from "./types/flash-sale";
 import { useCountdown } from "./hooks/useCountdown";
+import { useInventoryReservation } from "./hooks/useInventoryReservation";
+
+import type { Product } from "./types/flash-sale";
 
 import "./App.css";
 
-// Demo duration: 10 minutes.
 const FLASH_SALE_DURATION_MS = 10 * 60 * 1000;
 
 function App() {
+  // Existing countdown remains unchanged.
   const { remainingMs, isEnded } = useCountdown(
     FLASH_SALE_DURATION_MS
   );
 
-  const [demoMessage, setDemoMessage] = useState("");
+  const {
+    displayedProducts,
+    pendingProductIds,
+    latestReservation,
+    error,
+    isReady,
+    reserveProduct,
+  } = useInventoryReservation();
 
   const handleBuyNow = (product: Product) => {
-    if (isEnded) {
+    if (isEnded || !isReady) {
       return;
     }
 
-    // Stage 3: No reservation or checkout.
-    setDemoMessage(
-      `Bạn đã chọn ${product.name}. ` +
-      "Chức năng giữ hàng và thanh toán " +
-      "sẽ được triển khai ở giai đoạn sau."
-    );
+    void reserveProduct(product.id, isEnded, remainingMs);
   };
 
   return (
@@ -43,18 +44,17 @@ function App() {
 
       <main className="main-content">
         <ProductGrid
-          products={products}
-          isSaleEnded={isEnded}
+          products={displayedProducts}
+          isSaleEnded={isEnded || !isReady}
+          pendingProductIds={pendingProductIds}
           onBuyNow={handleBuyNow}
         />
 
-        {demoMessage && (
-          <p className="demo-purchase-notice" role="status">
-            {demoMessage}
-          </p>
-        )}
-
-        <OrderStatus status="idle" />
+        <OrderStatus
+          reservation={latestReservation}
+          error={error}
+          isReserving={pendingProductIds.length > 0}
+        />
       </main>
 
       <footer className="site-footer">

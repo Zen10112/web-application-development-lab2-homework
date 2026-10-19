@@ -55,3 +55,75 @@
     min-width: 52px;
   }
 }
+
+/* ===== OPTIMISTIC INVENTORY LOCK ===== */
+
+.buy-button.is-reserving {
+  background: #f59e0b;
+  color: #422006;
+  cursor: wait;
+  opacity: 1;
+}
+
+.reservation-reserving {
+  background: #fffbeb;
+  border-color: #f59e0b;
+}
+
+.reservation-reserved {
+  background: #f0fdf4;
+  border-color: #16a34a;
+}
+
+.reservation-reserved p {
+  color: #166534;
+}
+
+.reservation-failed {
+  background: #fef2f2;
+  border-color: #dc2626;
+}
+
+.reservation-failed p {
+  color: #991b1b;
+}
+
+.reservation-expired {
+  background: #fff7ed;
+  border-color: #ea580c;
+}
+
+.reservation-expired p {
+  color: #9a3412;
+}
+
+.reservation-details {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  max-width: 540px;
+  margin: 20px auto;
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  text-align: left;
+  color: #334155;
+  font-size: 14px;
+}
+
+.reservation-details code {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.reservation-details strong {
+  color: #0f172a;
+}
+
+@media (max-width: 480px) {
+  .reservation-details {
+    padding: 12px;
+    font-size: 13px;
+  }
+}

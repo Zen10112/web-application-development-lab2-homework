@@ -5,12 +5,14 @@ import ProductCard from "./ProductCard";
 interface ProductGridProps {
   products: Product[];
   isSaleEnded: boolean;
+  pendingProductIds: string[];
   onBuyNow: (product: Product) => void;
 }
 
 export default function ProductGrid({
   products,
   isSaleEnded,
+  pendingProductIds,
   onBuyNow,
 }: ProductGridProps) {
   return (
@@ -32,6 +34,9 @@ export default function ProductGrid({
             key={product.id}
             product={product}
             isSaleEnded={isSaleEnded}
+            isReserving={pendingProductIds.includes(
+              product.id
+            )}
             onBuyNow={onBuyNow}
           />
         ))}

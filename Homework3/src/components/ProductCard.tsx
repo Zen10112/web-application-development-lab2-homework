@@ -5,18 +5,28 @@ import { formatCurrency } from "../utils/format";
 interface ProductCardProps {
   product: Product;
   isSaleEnded: boolean;
+  isReserving: boolean;
   onBuyNow: (product: Product) => void;
 }
 
 export default function ProductCard({
   product,
   isSaleEnded,
+  isReserving,
   onBuyNow,
 }: ProductCardProps) {
-  const isOutOfStock =
-    product.inventory.availableStock <= 0;
+  const available =
+    product.inventory.availableStock;
 
-  const isDisabled = isSaleEnded || isOutOfStock;
+  const isOutOfStock = available <= 0;
+
+  const isDisabled =
+    isSaleEnded || isReserving || isOutOfStock;
+
+  const stockPercent =
+    (available /
+      Math.max(1, product.inventory.totalStock)) *
+    100;
 
   return (
     <article className="product-card">
@@ -54,10 +64,7 @@ export default function ProductCard({
 
         <div className="product-stock">
           <span>
-            Còn lại:{" "}
-            <strong>
-              {product.inventory.availableStock}
-            </strong>
+            Còn lại: <strong>{available}</strong>
           </span>
 
           <div
@@ -66,16 +73,12 @@ export default function ProductCard({
             aria-label={`Tồn kho ${product.name}`}
             aria-valuemin={0}
             aria-valuemax={product.inventory.totalStock}
-            aria-valuenow={product.inventory.availableStock}
+            aria-valuenow={available}
           >
             <div
               className="stock-progress-fill"
               style={{
-                width: `${
-                  (product.inventory.availableStock /
-                    Math.max(1, product.inventory.totalStock)) *
-                  100
-                }%`,
+                width: `${Math.max(0, Math.min(100, stockPercent))}%`,
               }}
             />
           </div>
@@ -83,15 +86,19 @@ export default function ProductCard({
 
         <button
           type="button"
-          className="buy-button"
+          className={`buy-button ${
+            isReserving ? "is-reserving" : ""
+          }`}
           disabled={isDisabled}
           onClick={() => onBuyNow(product)}
         >
           {isSaleEnded
             ? "Sale đã kết thúc"
-            : isOutOfStock
-              ? "Hết hàng"
-              : "Mua ngay"}
+            : isReserving
+              ? "Reserving..."
+              : isOutOfStock
+                ? "Hết hàng"
+                : "Mua ngay"}
         </button>
       </div>
     </article>
