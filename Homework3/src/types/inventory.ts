@@ -35,3 +35,9 @@ export interface ReservationResult {
   reservation?: Reservation;
   error?: string;
 }
+
+export interface CheckoutResult {
+  success: boolean;
+  reservation?: Reservation;
+  error?: string;
+}

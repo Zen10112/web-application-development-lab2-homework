@@ -17,6 +17,7 @@ import type {
 
 const RESERVATION_TTL_MS = 30_000;
 const MOCK_NETWORK_DELAY_MS = 350;
+const MOCK_CHECKOUT_DELAY_MS = 600;
 
 type InventoryMap = Record<string, InventorySnapshot>;
 
@@ -35,7 +36,7 @@ function toInventoryMap(
   return Object.fromEntries(
     inventories.map((inventory) => [
       inventory.productId,
-      inventory,
+      { ...inventory },
     ])
   );
 }
@@ -43,14 +44,19 @@ function toInventoryMap(
 export function useInventoryReservation() {
   const serviceRef = useRef<InventoryService | null>(null);
 
-  // Synchronous guard against repeated rapid clicks.
+  // Synchronous guards for rapid clicks.
   const inFlightRef = useRef<Set<string>>(new Set());
+  const checkoutInFlightRef = useRef<Set<string>>(
+    new Set()
+  );
 
   const [confirmedInventory, setConfirmedInventory] =
     useState<InventoryMap>(initialInventoryMap);
 
-  const [optimisticQuantities, setOptimisticQuantities] =
-    useState<Record<string, number>>({});
+  const [
+    optimisticQuantities,
+    setOptimisticQuantities,
+  ] = useState<Record<string, number>>({});
 
   const [pendingProductIds, setPendingProductIds] =
     useState<string[]>([]);
@@ -58,24 +64,35 @@ export function useInventoryReservation() {
   const [reservations, setReservations] =
     useState<Reservation[]>([]);
 
-  const [error, setError] = useState<string | null>(null);
+  const [checkoutPendingId, setCheckoutPendingId] =
+    useState<string | null>(null);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
   const [isReady, setIsReady] = useState(false);
 
-  // Reads authoritative values from InventoryService.
+  // Read authoritative inventory and reservation states.
   const synchronize = useCallback(() => {
     const service = serviceRef.current;
-    if (!service) return;
+
+    if (service === null) {
+      return;
+    }
 
     const snapshots = service.getAllInventories();
-    setConfirmedInventory(toInventoryMap(snapshots));
+
+    setConfirmedInventory(
+      toInventoryMap(snapshots)
+    );
 
     setReservations((previous) =>
-      previous.map((reservation) => {
-        return (
-          service.getReservation(reservation.reservationId) ??
-          reservation
-        );
-      })
+      previous.map(
+        (reservation) =>
+          service.getReservation(
+            reservation.reservationId
+          ) ?? reservation
+      )
     );
   }, []);
 
@@ -86,9 +103,11 @@ export function useInventoryReservation() {
     );
 
     serviceRef.current = service;
+
     setConfirmedInventory(
       toInventoryMap(service.getAllInventories())
     );
+
     setIsReady(true);
 
     const handleVisibility = () => {
@@ -106,7 +125,10 @@ export function useInventoryReservation() {
       handleVisibility
     );
 
-    window.addEventListener("focus", handleFocus);
+    window.addEventListener(
+      "focus",
+      handleFocus
+    );
 
     return () => {
       document.removeEventListener(
@@ -114,7 +136,10 @@ export function useInventoryReservation() {
         handleVisibility
       );
 
-      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener(
+        "focus",
+        handleFocus
+      );
 
       service.dispose();
 
@@ -123,56 +148,72 @@ export function useInventoryReservation() {
       }
 
       inFlightRef.current.clear();
+      checkoutInFlightRef.current.clear();
     };
   }, [synchronize]);
 
-  // Keep the UI synchronized at the next expiry deadline.
+  // Schedule UI refresh at the nearest expiry deadline.
   useEffect(() => {
-    const active = reservations.filter(
-      (reservation) => reservation.status === "RESERVED"
+    const activeReservations = reservations.filter(
+      (reservation) =>
+        reservation.status === "RESERVED"
     );
 
-    if (active.length === 0) return;
+    if (activeReservations.length === 0) {
+      return;
+    }
 
     const nearestExpiration = Math.min(
-      ...active.map((reservation) => reservation.expiresAt)
+      ...activeReservations.map(
+        (reservation) => reservation.expiresAt
+      )
     );
 
-    const remaining = Math.max(
+    const remainingMs = Math.max(
       0,
       nearestExpiration - Date.now()
     );
 
     const timeout = window.setTimeout(() => {
       synchronize();
-    }, remaining);
+    }, remainingMs);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+    };
   }, [reservations, synchronize]);
 
+  /**
+   * Performs optimistic reservation.
+   *
+   * UI stock is decreased immediately. The service
+   * still owns the actual inventory.
+   */
   const reserveProduct = useCallback(
-  async (
-    productId: string,
-    isSaleEnded: boolean,
-    remainingSaleMs: number
-  ) => {
-    const currentService = serviceRef.current;
+    async (
+      productId: string,
+      isSaleEnded: boolean,
+      remainingSaleMs: number
+    ): Promise<void> => {
+      const currentService = serviceRef.current;
 
-    if (currentService === null || isSaleEnded) {
-      return;
-    }
+      if (
+        currentService === null ||
+        isSaleEnded ||
+        remainingSaleMs <= 0
+      ) {
+        return;
+      }
 
-    const service: InventoryService = currentService;
-    const saleDeadline = Date.now() + remainingSaleMs;
+      const service: InventoryService = currentService;
+      const saleDeadline = Date.now() + remainingSaleMs;
 
-    // Keep all existing reservation logic below.
-      // Prevent duplicate requests before React re-renders.
       if (inFlightRef.current.has(productId)) {
         return;
       }
 
-      // Check actual stock, not optimistic UI values.
-      const stock = service.getAvailableStock(productId);
+      const stock =
+        service.getAvailableStock(productId);
 
       if (stock < 1) {
         synchronize();
@@ -183,47 +224,53 @@ export function useInventoryReservation() {
       inFlightRef.current.add(productId);
 
       setError(null);
-      setPendingProductIds((previous) => [
-        ...previous,
-        productId,
-      ]);
 
-      // UI-only reservation. No service stock mutation yet.
+      setPendingProductIds((previous) =>
+        previous.includes(productId)
+          ? previous
+          : [...previous, productId]
+      );
+
       setOptimisticQuantities((previous) => ({
         ...previous,
         [productId]: 1,
       }));
 
       try {
-        // Simulate an asynchronous network response.
         await new Promise<void>((resolve) => {
-  window.setTimeout(resolve, MOCK_NETWORK_DELAY_MS);
-});
+          window.setTimeout(
+            resolve,
+            MOCK_NETWORK_DELAY_MS
+          );
+        });
 
-// Stop if the service has been disposed or replaced.
-if (serviceRef.current !== service) {
-  return;
-}
+        // Stop when the component's service was replaced.
+        if (serviceRef.current !== service) {
+          return;
+        }
 
-// Reject reservation if Flash Sale has ended.
-if (Date.now() >= saleDeadline) {
-  setError("Flash Sale đã kết thúc. Không thể giữ hàng.");
-  synchronize();
-  return;
-}
+        // Reject if the sale ended while waiting.
+        if (Date.now() >= saleDeadline) {
+          setError(
+            "Flash Sale đã kết thúc. Không thể giữ hàng."
+          );
+
+          synchronize();
+          return;
+        }
 
         const result = service.reserve({
           productId,
           quantity: 1,
         });
 
-        // Always re-read confirmed inventory after response.
         synchronize();
 
         if (!result.success || !result.reservation) {
           setError(
             result.error ?? "Không thể giữ sản phẩm."
           );
+
           return;
         }
 
@@ -247,10 +294,11 @@ if (Date.now() >= saleDeadline) {
           );
         }
       } finally {
-        // Remove the optimistic overlay regardless of outcome.
         inFlightRef.current.delete(productId);
 
         if (serviceRef.current === service) {
+          // Rollback optimistic overlay on both
+          // success and failure.
           setOptimisticQuantities((previous) => {
             const next = { ...previous };
             delete next[productId];
@@ -258,7 +306,9 @@ if (Date.now() >= saleDeadline) {
           });
 
           setPendingProductIds((previous) =>
-            previous.filter((id) => id !== productId)
+            previous.filter(
+              (id) => id !== productId
+            )
           );
         }
       }
@@ -266,12 +316,126 @@ if (Date.now() >= saleDeadline) {
     [synchronize]
   );
 
-  // UI projection: confirmed inventory minus pending overlays.
-  // This does not mutate InventoryService or products.ts.
+  /**
+   * Starts checkout for one reservation.
+   *
+   * The actual lock and stock transfer happen inside
+   * InventoryService, not React state.
+   */
+  const checkoutReservation = useCallback(
+    async (reservationId: string): Promise<void> => {
+      const currentService = serviceRef.current;
+
+      if (currentService === null) {
+        return;
+      }
+
+      const service: InventoryService = currentService;
+
+      if (
+        checkoutInFlightRef.current.has(reservationId)
+      ) {
+        return;
+      }
+
+      const reservation =
+        service.getReservation(reservationId);
+
+      if (!reservation) {
+        setError("Reservation không tồn tại.");
+        synchronize();
+        return;
+      }
+
+      if (reservation.status !== "RESERVED") {
+        setError(
+          `Không thể checkout reservation ${reservation.status}.`
+        );
+
+        synchronize();
+        return;
+      }
+
+      if (Date.now() >= reservation.expiresAt) {
+        setError("Reservation đã hết hạn.");
+        synchronize();
+        return;
+      }
+
+      checkoutInFlightRef.current.add(reservationId);
+
+      setCheckoutPendingId(reservationId);
+      setError(null);
+
+      setReservations((previous) =>
+        previous.map((item) =>
+          item.reservationId === reservationId
+            ? { ...item, status: "CHECKOUT" }
+            : item
+        )
+      );
+
+      try {
+        const result = await service.checkout(
+          reservationId,
+          async () => {
+            // Simulated payment only.
+            await new Promise<void>((resolve) => {
+              window.setTimeout(
+                resolve,
+                MOCK_CHECKOUT_DELAY_MS
+              );
+            });
+
+            // Change to false to test failed checkout.
+            return true;
+          }
+        );
+
+        if (serviceRef.current !== service) {
+          return;
+        }
+
+        synchronize();
+
+        if (!result.success) {
+          setError(
+            result.error ?? "Checkout thất bại."
+          );
+        }
+      } catch (caught) {
+        if (serviceRef.current === service) {
+          synchronize();
+
+          setError(
+            caught instanceof Error
+              ? caught.message
+              : "Không thể xử lý checkout."
+          );
+        }
+      } finally {
+        checkoutInFlightRef.current.delete(
+          reservationId
+        );
+
+        if (serviceRef.current === service) {
+          setCheckoutPendingId((previous) =>
+            previous === reservationId
+              ? null
+              : previous
+          );
+        }
+      }
+    },
+    [synchronize]
+  );
+
+  // UI projection only; products.ts is never mutated.
   const displayedProducts: Product[] = products.map(
     (product) => {
       const confirmed =
-        confirmedInventory[product.id] ?? product.inventory;
+        confirmedInventory[product.id] ??
+        product.inventory;
 
       const optimistic =
         optimisticQuantities[product.id] ?? 0;
@@ -304,6 +468,8 @@ if (Date.now() >= saleDeadline) {
     error,
     isReady,
     reserveProduct,
+    checkoutReservation,
+    checkoutPendingId,
     synchronize,
   };
 }

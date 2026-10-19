@@ -13,7 +13,6 @@ import "./App.css";
 const FLASH_SALE_DURATION_MS = 10 * 60 * 1000;
 
 function App() {
-  // Existing countdown remains unchanged.
   const { remainingMs, isEnded } = useCountdown(
     FLASH_SALE_DURATION_MS
   );
@@ -25,6 +24,8 @@ function App() {
     error,
     isReady,
     reserveProduct,
+    checkoutReservation,
+    checkoutPendingId,
   } = useInventoryReservation();
 
   const handleBuyNow = (product: Product) => {
@@ -32,7 +33,15 @@ function App() {
       return;
     }
 
-    void reserveProduct(product.id, isEnded, remainingMs);
+    void reserveProduct(
+      product.id,
+      isEnded,
+      remainingMs
+    );
+  };
+
+  const handleCheckout = (reservationId: string) => {
+    void checkoutReservation(reservationId);
   };
 
   return (
@@ -54,6 +63,8 @@ function App() {
           reservation={latestReservation}
           error={error}
           isReserving={pendingProductIds.length > 0}
+          isCheckingOut={checkoutPendingId !== null}
+          onCheckout={handleCheckout}
         />
       </main>
 
