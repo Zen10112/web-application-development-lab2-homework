@@ -66,4 +66,77 @@ describe("AudioTaskQueue", () => {
     expect(results.every(result => result.status === "rejected")).toBe(true);
     queue.dispose();
   });
+
+  
+it("rejects an active task immediately when cancelled", async () => {
+  let releaseDecode!: () => void;
+
+  const decoding = new Promise<void>((resolve) => {
+    releaseDecode = resolve;
+  });
+
+  const loader: TrackLoader = async () => {
+    await decoding;
+    return fakeBuffer;
+  };
+
+  const queue = new AudioTaskQueue(
+    fakeAudioContext,
+    loader
+  );
+
+  const result = queue.enqueue("track-a").then(
+    () => "fulfilled",
+    () => "rejected"
+  );
+
+  queue.cancelAll();
+
+  expect(await result).toBe("rejected");
+
+  // Allow underlying decode simulation to finish.
+  releaseDecode();
+
+  queue.dispose();
+});
+
+it("processes the next track after a failed download", async () => {
+  const processed: string[] = [];
+
+  const loader: TrackLoader = async (url) => {
+    processed.push(url);
+
+    if (url === "track-b") {
+      throw new Error("HTTP 404");
+    }
+
+    return fakeBuffer;
+  };
+
+  const queue = new AudioTaskQueue(
+    fakeAudioContext,
+    loader
+  );
+
+  const results = await Promise.allSettled([
+    queue.enqueue("track-a"),
+    queue.enqueue("track-b"),
+    queue.enqueue("track-c"),
+  ]);
+
+  expect(results.map((result) => result.status)).toEqual([
+    "fulfilled",
+    "rejected",
+    "fulfilled",
+  ]);
+
+  expect(processed).toEqual([
+    "track-a",
+    "track-b",
+    "track-c",
+  ]);
+
+  queue.dispose();
+});
+
 });
